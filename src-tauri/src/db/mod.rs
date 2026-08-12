@@ -1,5 +1,6 @@
 pub mod models;
 pub mod folders;
+pub mod jobs;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
