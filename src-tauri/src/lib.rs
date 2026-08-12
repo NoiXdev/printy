@@ -17,6 +17,12 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be the first plugin registered: it needs to intercept the
+        // process before anything else claims the single SQLite file and
+        // spawns a second queue worker / watcher set against it.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            shell::tray::show_main(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
