@@ -69,4 +69,47 @@ mod tests {
         assert_eq!(render_dpi(200), 200);
         assert_eq!(render_dpi(0), MIN_RENDER_DPI);
     }
+
+    #[test]
+    fn source_larger_than_area_is_scaled_down() {
+        // 2000x1000 source into a 400x400 area
+        // scale = min(400/2000, 400/1000) = min(0.2, 0.4) = 0.2
+        // width = round(2000 * 0.2) = 400
+        // height = round(1000 * 0.2) = 200
+        // x = (400 - 400) / 2 = 0
+        // y = (400 - 200) / 2 = 100
+        let r = fit_centered(2000, 1000, 400, 400);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 100, 400, 200));
+        assert!(r.width <= 400);
+        assert!(r.height <= 400);
+    }
+
+    #[test]
+    fn mixed_ratio_downscales_by_the_limiting_dimension() {
+        // 800x100 source into a 400x400 area
+        // scale = min(400/800, 400/100) = min(0.5, 4.0) = 0.5
+        // width = round(800 * 0.5) = 400
+        // height = round(100 * 0.5) = 50
+        // x = (400 - 400) / 2 = 0
+        // y = (400 - 50) / 2 = 175
+        let r = fit_centered(800, 100, 400, 400);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 175, 400, 50));
+        assert!(r.width <= 400);
+        assert!(r.height <= 400);
+    }
+
+    #[test]
+    fn non_positive_area_yields_a_zero_rect() {
+        // Zero width area
+        let r = fit_centered(1000, 1000, 0, 400);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 0, 0, 0));
+
+        // Zero height area
+        let r = fit_centered(1000, 1000, 400, 0);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 0, 0, 0));
+
+        // Negative area dimension
+        let r = fit_centered(1000, 1000, -100, 400);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 0, 0, 0));
+    }
 }
