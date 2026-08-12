@@ -1,4 +1,6 @@
 pub mod fake;
+#[cfg(target_os = "macos")]
+pub mod macos_cups;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

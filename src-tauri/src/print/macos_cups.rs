@@ -1,0 +1,156 @@
+use crate::print::{
+    ColorMode, DuplexMode, PrintBackend, PrintError, PrintRequest, PrinterCapabilities,
+    PrinterInfo,
+};
+use std::process::Command;
+
+pub struct CupsBackend;
+
+/// Parses `lpstat -p -d` output. Lines look like:
+///   printer NAME is idle.  enabled since ...
+///   system default destination: NAME
+pub fn parse_lpstat(out: &str) -> Vec<PrinterInfo> {
+    let mut printers: Vec<PrinterInfo> = Vec::new();
+    let mut default_name: Option<String> = None;
+
+    for line in out.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("printer ") {
+            if let Some(name) = rest.split_whitespace().next() {
+                printers.push(PrinterInfo { name: name.to_string(), is_default: false });
+            }
+        } else if let Some(rest) = line.strip_prefix("system default destination: ") {
+            default_name = Some(rest.trim().to_string());
+        }
+    }
+    if let Some(d) = default_name {
+        for p in printers.iter_mut() {
+            p.is_default = p.name == d;
+        }
+    }
+    printers
+}
+
+/// Builds the argument vector for `lp`. Pure, so it is unit-testable.
+pub fn lp_args(req: &PrintRequest) -> Vec<String> {
+    let sides = match req.duplex {
+        DuplexMode::Simplex => "sides=one-sided",
+        DuplexMode::LongEdge => "sides=two-sided-long-edge",
+        DuplexMode::ShortEdge => "sides=two-sided-short-edge",
+    };
+    let color = match req.color {
+        ColorMode::Color => "ColorModel=RGB",
+        ColorMode::Mono => "ColorModel=Gray",
+    };
+    vec![
+        "-d".into(), req.printer.clone(),
+        "-n".into(), req.copies.to_string(),
+        "-o".into(), sides.to_string(),
+        "-o".into(), color.to_string(),
+        req.file.to_string_lossy().to_string(),
+    ]
+}
+
+impl PrintBackend for CupsBackend {
+    fn list_printers(&self) -> Result<Vec<PrinterInfo>, PrintError> {
+        let out = Command::new("lpstat")
+            .args(["-p", "-d"])
+            .output()
+            .map_err(|e| PrintError::config(format!("lpstat nicht ausführbar: {e}")))?;
+        Ok(parse_lpstat(&String::from_utf8_lossy(&out.stdout)))
+    }
+
+    fn capabilities(&self, _printer: &str) -> Result<PrinterCapabilities, PrintError> {
+        // CUPS reports capabilities through PPD options; probing them adds no
+        // value on the development platform, so everything is offered.
+        Ok(PrinterCapabilities { duplex: true, color: true, copies: true })
+    }
+
+    fn print(&self, req: &PrintRequest) -> Result<(), PrintError> {
+        if !req.file.exists() {
+            return Err(PrintError::file(format!(
+                "Datei nicht gefunden: {}", req.file.display()
+            )));
+        }
+        let out = Command::new("lp")
+            .args(lp_args(req))
+            .output()
+            .map_err(|e| PrintError::printer(format!("lp nicht ausführbar: {e}")))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // A missing or stopped destination is a printer-level problem.
+        if msg.contains("does not exist") || msg.contains("not accepting") {
+            Err(PrintError::printer(format!("Drucker nicht erreichbar: {msg}")))
+        } else {
+            Err(PrintError::file(format!("Druck fehlgeschlagen: {msg}")))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::print::{ColorMode, DuplexMode, PrintRequest};
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_lpstat_output_and_marks_the_default() {
+        let out = "printer Brother_MFC is idle.  enabled since Mon\n\
+                   printer HP_LaserJet is idle.  enabled since Mon\n\
+                   system default destination: HP_LaserJet\n";
+        let list = parse_lpstat(out);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "Brother_MFC");
+        assert!(!list[0].is_default);
+        assert!(list[1].is_default);
+    }
+
+    #[test]
+    fn returns_no_printers_for_empty_output() {
+        assert!(parse_lpstat("").is_empty());
+    }
+
+    #[test]
+    fn builds_lp_arguments_for_duplex_mono() {
+        let req = PrintRequest {
+            file: PathBuf::from("/tmp/a.pdf"),
+            printer: "HP".into(),
+            copies: 3,
+            duplex: DuplexMode::LongEdge,
+            color: ColorMode::Mono,
+        };
+        assert_eq!(
+            lp_args(&req),
+            vec![
+                "-d", "HP",
+                "-n", "3",
+                "-o", "sides=two-sided-long-edge",
+                "-o", "ColorModel=Gray",
+                "/tmp/a.pdf",
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_lp_arguments_for_simplex_color() {
+        let req = PrintRequest {
+            file: PathBuf::from("/tmp/b.png"),
+            printer: "P".into(),
+            copies: 1,
+            duplex: DuplexMode::Simplex,
+            color: ColorMode::Color,
+        };
+        assert_eq!(
+            lp_args(&req),
+            vec![
+                "-d", "P",
+                "-n", "1",
+                "-o", "sides=one-sided",
+                "-o", "ColorModel=RGB",
+                "/tmp/b.png",
+            ]
+        );
+    }
+}
