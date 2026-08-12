@@ -1,6 +1,6 @@
 use crate::print::{
-    ColorMode, DuplexMode, PrintBackend, PrintError, PrintRequest, PrinterCapabilities,
-    PrinterInfo,
+    ColorMode, DuplexMode, PrintBackend, PrintError, PrintErrorKind, PrintRequest,
+    PrinterCapabilities, PrinterInfo,
 };
 use std::process::Command;
 
@@ -51,10 +51,24 @@ pub fn lp_args(req: &PrintRequest) -> Vec<String> {
     ]
 }
 
+/// Classifies `lp`'s stderr. A missing or stopped destination is a printer-level
+/// problem that must hold the queue; anything else fails just this job.
+pub fn classify_stderr(stderr: &str) -> PrintErrorKind {
+    if stderr.contains("does not exist") || stderr.contains("not accepting") {
+        PrintErrorKind::Printer
+    } else {
+        PrintErrorKind::File
+    }
+}
+
 impl PrintBackend for CupsBackend {
     fn list_printers(&self) -> Result<Vec<PrinterInfo>, PrintError> {
         let out = Command::new("lpstat")
             .args(["-p", "-d"])
+            // Force C locale to ensure English output regardless of system language.
+            // CUPS translates its stderr messages based on the system locale, which
+            // would break the error classification in the print method.
+            .env("LC_ALL", "C")
             .output()
             .map_err(|e| PrintError::config(format!("lpstat nicht ausführbar: {e}")))?;
         Ok(parse_lpstat(&String::from_utf8_lossy(&out.stdout)))
@@ -74,14 +88,18 @@ impl PrintBackend for CupsBackend {
         }
         let out = Command::new("lp")
             .args(lp_args(req))
+            // Force C locale to ensure English output regardless of system language.
+            // CUPS translates its stderr messages based on the system locale, which
+            // would break the error classification below.
+            .env("LC_ALL", "C")
             .output()
             .map_err(|e| PrintError::printer(format!("lp nicht ausführbar: {e}")))?;
         if out.status.success() {
             return Ok(());
         }
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        // A missing or stopped destination is a printer-level problem.
-        if msg.contains("does not exist") || msg.contains("not accepting") {
+        let kind = classify_stderr(&msg);
+        if kind == PrintErrorKind::Printer {
             Err(PrintError::printer(format!("Drucker nicht erreichbar: {msg}")))
         } else {
             Err(PrintError::file(format!("Druck fehlgeschlagen: {msg}")))
@@ -152,5 +170,23 @@ mod tests {
                 "/tmp/b.png",
             ]
         );
+    }
+
+    #[test]
+    fn classifies_missing_destination_as_printer_error() {
+        let stderr = "lp: Error - The printer or class does not exist.";
+        assert_eq!(classify_stderr(stderr), PrintErrorKind::Printer);
+    }
+
+    #[test]
+    fn classifies_not_accepting_as_printer_error() {
+        let stderr = "lp: Error - Destination \"HP\" is not accepting jobs.";
+        assert_eq!(classify_stderr(stderr), PrintErrorKind::Printer);
+    }
+
+    #[test]
+    fn classifies_unrelated_failure_as_file_error() {
+        let stderr = "lp: Error - Unable to open file: No such file or directory";
+        assert_eq!(classify_stderr(stderr), PrintErrorKind::File);
     }
 }
