@@ -3,6 +3,7 @@ import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import Folders from "./routes/Folders";
 import Settings from "./routes/Settings";
 import Logo from "./components/Logo";
+import { useJobNotifications } from "./lib/useJobNotifications";
 import "./App.css";
 
 interface NavItem {
@@ -43,6 +44,8 @@ function Sidebar(): JSX.Element {
 }
 
 function App(): JSX.Element {
+  useJobNotifications();
+
   return (
     <BrowserRouter>
       <div className="app-shell">
