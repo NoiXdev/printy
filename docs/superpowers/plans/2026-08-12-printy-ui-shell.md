@@ -19,6 +19,9 @@
 - Radii are `--radius: 16px` and `--radius-sm: 12px`. Display font is Fraunces Variable, self-hosted through `@fontsource-variable/fraunces`.
 - New npm dependencies are limited to what tabsy already uses, plus `@fontsource-variable/fraunces` and `@tauri-apps/plugin-dialog` (the JS binding for the Rust plugin plan 1 already installed and already granted `dialog:allow-open`).
 - Every component receives data through props or the `api` object. No component imports `invoke` directly.
+- **Theme lives in `localStorage` only.** It is a per-device display preference, not synced state, and it has to be applied before the first paint — which an asynchronous settings read cannot do. There is exactly one source of truth and no `theme` key in the database. This is a decided deviation from spec section 6, which lists `theme` among the settings keys.
+- **The tray colour reports one thing: whether the printer is stuck.** Coral exactly while the queue is in a printer hold, mint while running, grey while the user paused. Individually failed files never colour the tray — they belong in Verlauf. The hold clears itself when the printer returns, so no time window and no acknowledge concept are needed.
+- **Notification permission is requested in Einstellungen**, at the moment the user switches notifications on. Nothing prompts mid-print.
 - Tests are Vitest + Testing Library, colocated as `*.test.tsx` / `*.test.ts` next to the file under test, opening with explicit `import { describe, it, expect, vi } from "vitest";` as in `tabs-manager/src/components/SearchSelect.test.tsx`. Tauri is never reachable in jsdom, so every test file that transitively imports `@tauri-apps/api/core` mocks it with `vi.mock`.
 - Rust additions follow plan 1's rules: commands are suffixed `_cmd`, take `state: State<'_, AppState>` first, and are thin wrappers over testable functions. No new Rust dev-dependencies.
 - Every task ends with a green test run and a commit.
@@ -795,6 +798,7 @@ git commit -m "feat: add printy design tokens, shared screen styles and theme sw
 **Files:**
 - Create: `src/components/Logo.tsx`
 - Create: `assets/logo/printy-logo.svg`
+- Create: `assets/logo/printy-logo-1024.png` (committed raster master)
 - Create: `scripts/gen-icons.sh`
 - Test: `src/components/Logo.test.tsx`
 - Modify: `src-tauri/tauri.conf.json` (bundle icon list)
@@ -967,7 +971,7 @@ export default function Logo({
 Run: `npx vitest run src/components/Logo.test.tsx`
 Expected: PASS — 4 tests.
 
-- [ ] **Step 5: Write the standalone icon artwork**
+- [ ] **Step 5: Write the standalone icon artwork and render it once**
 
 Create `assets/logo/printy-logo.svg`. This is the app-icon lockup, not the in-app mark: it has literal colours (no CSS custom properties, because the rasteriser has no page context) and a cream rounded plate so the icon reads on any desktop background.
 
@@ -985,27 +989,45 @@ Create `assets/logo/printy-logo.svg`. This is the app-icon lockup, not the in-ap
 </svg>
 ```
 
+Then rasterise it **once**, by hand, and commit the result. This is an authoring
+step, not a build step: nothing in the build or in CI may fetch a rasteriser.
+
+```bash
+npx --yes @resvg/resvg-js-cli assets/logo/printy-logo.svg \
+  assets/logo/printy-logo-1024.png --width 1024 --height 1024
+```
+
+Any rasteriser produces an acceptable master — Inkscape, `rsvg-convert`, a
+browser export — as long as the result is exactly 1024x1024, RGBA with a
+transparent-free cream plate, and lands at `assets/logo/printy-logo-1024.png`.
+That PNG is committed and is from here on the input to the icon pipeline. The
+SVG stays in the repository as the editable master; changing it means re-running
+this one-off render and committing the new PNG.
+
 - [ ] **Step 6: Write the icon generation script**
 
-Create `scripts/gen-icons.sh`. It rasterises the SVG to a 1024px PNG through a one-shot `npx` binary — the same "no project dependency, fetched on demand" approach tabsy uses in `scripts/gen-licenses.sh` — and then hands that PNG to the Tauri icon pipeline, which emits `icon.ico` with every Windows size, `icon.icns`, the PNG ladder and the Square*Logo set.
+Create `scripts/gen-icons.sh`. It consumes the committed PNG and runs only the
+Tauri icon pipeline, which emits `icon.ico` with every Windows size, `icon.icns`,
+the PNG ladder and the Windows Store Square*Logo set. No network access, no tool
+fetched on the fly.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SRC="assets/logo/printy-logo.svg"
 PNG="assets/logo/printy-logo-1024.png"
 
-# Rasterise the vector master. resvg is fetched on demand, never installed as a
-# project dependency.
-npx --yes @resvg/resvg-js-cli "$SRC" "$PNG" --width 1024 --height 1024
+if [ ! -f "$PNG" ]; then
+  echo "missing $PNG — render assets/logo/printy-logo.svg at 1024x1024 and commit it" >&2
+  exit 1
+fi
 
 # Emits src-tauri/icons/: icon.ico (16/24/32/48/64/256), icon.icns, the PNG
 # ladder and the Windows Store Square*Logo set.
 npm run tauri -- icon "$PNG"
 
-echo "icons regenerated from $SRC"
+echo "icons regenerated from $PNG"
 ```
 
 Then run:
@@ -1040,7 +1062,8 @@ Expected: at least five entries, including a 16, a 32, a 48 and a 256 pixel imag
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/components/Logo.tsx src/components/Logo.test.tsx assets/logo \
+git add src/components/Logo.tsx src/components/Logo.test.tsx \
+  assets/logo/printy-logo.svg assets/logo/printy-logo-1024.png \
   scripts/gen-icons.sh src-tauri/icons src-tauri/tauri.conf.json
 git commit -m "feat: add printy logo component and generated windows icon set"
 ```
@@ -1052,6 +1075,7 @@ git commit -m "feat: add printy logo component and generated windows icon set"
 **Files:**
 - Create: `src-tauri/src/commands/shell.rs`
 - Modify: `src-tauri/src/commands/mod.rs` (add `pub mod shell;`)
+- Modify: `src-tauri/src/commands/settings.rs` (remove the `theme` entry from `KEYS`)
 - Modify: `src-tauri/src/lib.rs` (three entries in the `tauri::generate_handler!` list added by plan 1's Task 17, Step 5)
 
 **Interfaces:**
@@ -1063,6 +1087,11 @@ Plan 1's Task 17 deliberately stops at the fourteen commands the spec's section 
 1. The create dialog must say *"vorhandene 23 Dateien jetzt mitdrucken"*. The count needs a directory listing that honours the folder's type filter and skips `printed/` and `failed/`, which is exactly `scan_folder`.
 2. Plan 1 persists the `autostart` setting but nothing applies it to the operating system. Toggling it must reach `tauri_plugin_autostart` immediately, not on next launch. tabsy has the same pair (`get_autostart_cmd` / `set_autostart_cmd`, `tabs-manager/src-tauri/src/lib.rs:167-168`).
 3. Reading the setting back has to report what the OS actually believes, not what the database wrote.
+
+The same step retires one setting. The theme is a per-device display preference
+that must be applied before the first paint, which an asynchronous command
+cannot do; it lives in `localStorage` and nowhere else. Leaving a `theme` key in
+`KEYS` would leave a second, never-read source of truth in the database.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1200,7 +1229,7 @@ pub mod settings;
 pub mod shell;
 ```
 
-- [ ] **Step 4: Register the commands**
+- [ ] **Step 4: Register the commands and retire the theme setting**
 
 In `src-tauri/src/lib.rs`, inside the `tauri::generate_handler![...]` list added by plan 1's Task 17 Step 5, add three entries after `commands::settings::set_global_paused_cmd,`:
 
@@ -1209,6 +1238,22 @@ In `src-tauri/src/lib.rs`, inside the `tauri::generate_handler![...]` list added
             commands::shell::get_autostart_cmd,
             commands::shell::set_autostart_cmd,
 ```
+
+In `src-tauri/src/commands/settings.rs`, drop the `theme` entry so `KEYS` reads:
+
+```rust
+const KEYS: &[(&str, &str)] = &[
+    ("notification_mode", "all"),
+    ("autostart", "0"),
+    ("start_minimized", "0"),
+    ("sumatra_path", ""),
+    ("user_paused", "0"),
+];
+```
+
+`get_settings_cmd` therefore no longer returns a `theme` field, and
+`update_setting_cmd("theme", …)` is rejected as an unknown setting — which is
+correct, because nothing writes it.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1594,12 +1639,15 @@ export type FolderStatus = "ok" | "path_missing" | "printer_missing";
 export type JobState = "queued" | "printing" | "retrying" | "done" | "failed";
 export type NotificationMode = "all" | "errors" | "off";
 
-/** The keys `get_settings_cmd` always returns, defaulted server-side. */
+/**
+ * The keys `get_settings_cmd` always returns, defaulted server-side. There is
+ * deliberately no `theme` key: the theme is a per-device display preference and
+ * lives in `localStorage`, because it must be applied before the first paint.
+ */
 export type SettingKey =
   | "notification_mode"
   | "autostart"
   | "start_minimized"
-  | "theme"
   | "sumatra_path"
   | "user_paused";
 
@@ -3190,12 +3238,7 @@ export default function Folders(): JSX.Element {
 
   return (
     <section className="screen">
-      <div className="screen-header">
-        <h1>Ordner</h1>
-        <button type="button" className="btn" onClick={() => setDialogFor(null)}>
-          Ordner hinzufügen
-        </button>
-      </div>
+      <h1>Ordner</h1>
 
       <div className="aggregate">
         <span data-testid="aggregate">
@@ -3266,7 +3309,7 @@ export default function Folders(): JSX.Element {
         style={{ marginTop: "0.75rem" }}
         onClick={() => setDialogFor(null)}
       >
-        + Ordner hinzufügen
+        <span aria-hidden="true">+ </span>Ordner hinzufügen
       </button>
 
       {dialogFor !== undefined && (
@@ -3288,7 +3331,10 @@ export default function Folders(): JSX.Element {
 }
 ```
 
-Note: the header button and the dashed tile carry different accessible names — "Ordner hinzufügen" and "+ Ordner hinzufügen" — so `getByRole("button", { name: "Ordner hinzufügen" })` stays unambiguous.
+Note: the dashed tile is the single affordance for adding a folder, as the spec
+specifies — there is no duplicate button in the header. Its leading "+" sits in
+an `aria-hidden` span, so the accessible name is exactly "Ordner hinzufügen"
+while the plus still shows.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -3615,10 +3661,14 @@ git commit -m "feat: add verlauf screen with failure filter and per-row reprint"
 - Test: `src/routes/Settings.test.tsx`
 
 **Interfaces:**
-- Consumes: `lib/api::api`; `lib/theme::{ThemeChoice, applyTheme, getThemeChoice}`; `@tauri-apps/api/path`'s `appDataDir` and `join`; `@tauri-apps/plugin-opener`'s `revealItemInDir` and `openUrl`.
+- Consumes: `lib/api::api`; `lib/theme::{ThemeChoice, applyTheme, getThemeChoice}`; `@tauri-apps/api/path`'s `appDataDir` and `join`; `@tauri-apps/plugin-opener`'s `revealItemInDir` and `openUrl`; `@tauri-apps/plugin-notification`'s `isPermissionGranted` and `requestPermission`.
 - Produces: `routes/Settings` — `default function Settings(): JSX.Element`; `routes/About` — `default function About(): JSX.Element`.
 
-The theme is stored twice on purpose: `localStorage` is authoritative at startup, because the theme has to be applied before the first paint and `get_settings_cmd` is asynchronous; the `theme` key in the database is kept in sync so the setting is not lost with the browser storage. Everything else is a straight `update_setting_cmd`, except autostart, which goes through Task 3's command so the OS login item changes immediately.
+The theme is written to `localStorage` and nowhere else — it has to be applied before the first paint, which an asynchronous settings read cannot do, and a second copy in the database would only be a second thing to disagree with. There is no `theme` key; Task 3 removed it.
+
+Turning notifications on is also where permission is asked for. Prompting on the first toast would interrupt the very print the toast is about, and a mode that reads "Alle" while Windows silently drops every toast is a lie — so a denied permission snaps the setting back to "Aus" and says why.
+
+Everything else is a straight `update_setting_cmd`, except autostart, which goes through Task 3's command so the OS login item changes immediately.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3642,6 +3692,15 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
 
+// `vi.mock` factories are hoisted above the imports, so the handles they close
+// over must be created by `vi.hoisted` rather than by a plain const.
+const notify = vi.hoisted(() => ({
+  isPermissionGranted: vi.fn(),
+  requestPermission: vi.fn(),
+  sendNotification: vi.fn(),
+}));
+vi.mock("@tauri-apps/plugin-notification", () => notify);
+
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 function renderScreen() {
@@ -3656,14 +3715,16 @@ function renderScreen() {
 describe("Settings", () => {
   beforeEach(() => {
     localStorage.clear();
+    delete document.documentElement.dataset.theme;
+    notify.isPermissionGranted.mockReset().mockResolvedValue(true);
+    notify.requestPermission.mockReset().mockResolvedValue("granted");
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "get_settings_cmd") {
         return {
-          notification_mode: "all",
+          notification_mode: "off",
           autostart: "0",
           start_minimized: "0",
-          theme: "system",
           sumatra_path: "",
           user_paused: "0",
         };
@@ -3673,15 +3734,53 @@ describe("Settings", () => {
     });
   });
 
-  it("writes the notification mode through update_setting_cmd", async () => {
+  it("asks for permission and stores the mode when the user turns notifications on", async () => {
+    notify.isPermissionGranted.mockResolvedValue(false);
     renderScreen();
     fireEvent.click(await screen.findByRole("button", { name: "Nur Fehler" }));
+
+    await waitFor(() => expect(notify.requestPermission).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
         key: "notification_mode",
         value: "errors",
       }),
     );
+  });
+
+  it("falls back to off and says so when permission is refused", async () => {
+    notify.isPermissionGranted.mockResolvedValue(false);
+    notify.requestPermission.mockResolvedValue("denied");
+    renderScreen();
+    fireEvent.click(await screen.findByRole("button", { name: "Alle" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
+        key: "notification_mode",
+        value: "off",
+      }),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith("update_setting_cmd", {
+      key: "notification_mode",
+      value: "all",
+    });
+    expect(
+      screen.getByText(
+        "Windows erlaubt Printy keine Benachrichtigungen. Bitte in den Windows-Einstellungen freigeben.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("does not prompt when the user switches notifications off", async () => {
+    renderScreen();
+    fireEvent.click(await screen.findByRole("button", { name: "Aus" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
+        key: "notification_mode",
+        value: "off",
+      }),
+    );
+    expect(notify.requestPermission).not.toHaveBeenCalled();
   });
 
   it("routes autostart through the dedicated command, not the settings table", async () => {
@@ -3707,16 +3806,17 @@ describe("Settings", () => {
     );
   });
 
-  it("applies the theme locally and mirrors it into the database", async () => {
+  it("keeps the theme in localStorage only and never sends it to the backend", async () => {
     renderScreen();
     fireEvent.click(await screen.findByRole("button", { name: "Dunkel" }));
+
     expect(document.documentElement.dataset.theme).toBe("dark");
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
-        key: "theme",
-        value: "dark",
-      }),
-    );
+    expect(localStorage.getItem("printy-theme")).toBe("dark");
+    expect(
+      invokeMock.mock.calls.filter(
+        (c) => c[0] === "update_setting_cmd" && (c[1] as { key: string }).key === "theme",
+      ),
+    ).toEqual([]);
   });
 
   it("saves the SumatraPDF path on blur", async () => {
@@ -3754,6 +3854,7 @@ Create `src/routes/Settings.tsx`:
 import { useEffect, useState, type JSX } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { appDataDir, join } from "@tauri-apps/api/path";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
 import { applyTheme, getThemeChoice, type ThemeChoice } from "../lib/theme";
@@ -3777,6 +3878,7 @@ export default function Settings(): JSX.Element {
   const [theme, setTheme] = useState<ThemeChoice>(() => getThemeChoice());
   const [sumatra, setSumatra] = useState("");
   const [dbPath, setDbPath] = useState<string | null>(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
 
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const autostart = useQuery({ queryKey: ["autostart"], queryFn: api.getAutostart });
@@ -3807,12 +3909,33 @@ export default function Settings(): JSX.Element {
   const startMinimized = settings.data?.start_minimized === "1";
 
   function handleTheme(choice: ThemeChoice): void {
-    // localStorage is authoritative at startup — the theme must land before the
-    // first paint, and the settings command is asynchronous. The database copy
-    // keeps the choice if browser storage is ever cleared.
+    // localStorage only. The theme has to be applied before the first paint,
+    // which an asynchronous settings read cannot do, so a second copy in the
+    // database would only be a second thing to disagree with.
     applyTheme(choice);
     setTheme(choice);
-    updateSetting.mutate({ key: "theme", value: choice });
+  }
+
+  /**
+   * Turning notifications on is the moment to ask for permission. Prompting on
+   * the first toast would interrupt the very print it reports, and a mode that
+   * reads "Alle" while the OS drops every toast would be a lie — so a refusal
+   * snaps the setting back to "Aus".
+   */
+  async function handleNotificationMode(mode: NotificationMode): Promise<void> {
+    setPermissionDenied(false);
+    if (mode !== "off") {
+      let granted = await isPermissionGranted();
+      if (!granted) {
+        granted = (await requestPermission()) === "granted";
+      }
+      if (!granted) {
+        setPermissionDenied(true);
+        updateSetting.mutate({ key: "notification_mode", value: "off" });
+        return;
+      }
+    }
+    updateSetting.mutate({ key: "notification_mode", value: mode });
   }
 
   return (
@@ -3870,14 +3993,18 @@ export default function Settings(): JSX.Element {
               type="button"
               className={`mode${notificationMode === opt.value ? " on" : ""}`}
               aria-pressed={notificationMode === opt.value}
-              onClick={() =>
-                updateSetting.mutate({ key: "notification_mode", value: opt.value })
-              }
+              onClick={() => void handleNotificationMode(opt.value)}
             >
               {opt.label}
             </button>
           ))}
         </div>
+        {permissionDenied && (
+          <p className="folder-error" role="alert" style={{ marginTop: "0.75rem" }}>
+            Windows erlaubt Printy keine Benachrichtigungen. Bitte in den
+            Windows-Einstellungen freigeben.
+          </p>
+        )}
       </div>
 
       <div className="card">
@@ -4084,7 +4211,7 @@ export default function About(): JSX.Element {
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run src/routes/Settings.test.tsx`
-Expected: PASS — 6 tests.
+Expected: PASS — 8 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -4423,10 +4550,12 @@ git commit -m "feat: add sidebar app shell with ordner, verlauf, einstellungen a
 - Modify: `src-tauri/tauri.conf.json` (window `visible: false`)
 
 **Interfaces:**
-- Consumes: `db::settings::{get_setting, set_setting, user_paused, start_minimized}`; `AppState`; the event topic `printy://queue`.
+- Consumes: `db::settings::{set_setting, user_paused, start_minimized}`; `AppState`; the event topic `printy://queue`.
 - Produces: `shell::tray::{TRAY_ID, TrayState, tray_state, tray_rgba, setup_tray, spawn_tray_updater, show_main, toggle_main}`.
 
-This is Rust work extending plan 1's `lib.rs`, modelled on tabsy's tray setup at `tabs-manager/src-tauri/src/lib.rs:64-118`. The icon is drawn programmatically as raw RGBA rather than loaded from a file: `Image::new_owned` needs no extra cargo feature, the colour is a single constant per state, and the drawing is a pure function that can be unit-tested. The printer hold is not readable from the database — it is deliberately runtime-only state — so the updater listens to `printy://queue` and keeps its own flag, exactly the signal the queue scheduler already emits.
+This is Rust work extending plan 1's `lib.rs`, modelled on tabsy's tray setup at `tabs-manager/src-tauri/src/lib.rs:64-118`. The icon is drawn programmatically as raw RGBA rather than loaded from a file: `Image::new_owned` needs no extra cargo feature, the colour is a single constant per state, and the drawing is a pure function that can be unit-tested.
+
+The tray reports exactly one thing: whether the printer is stuck. Coral while the queue is in a printer hold, mint while running, grey while the user paused. Individually failed files never colour it — they belong in Verlauf, where the user can act on them, and a tray that stays red until someone dismisses it needs a read/acknowledged concept that this app has no reason to grow. The hold is deliberately runtime-only state that never reaches the database, so the updater listens to `printy://queue` — exactly the signal the queue scheduler already emits — and clears itself when the printer returns.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4438,21 +4567,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_users_pause_outranks_everything_else() {
-        assert_eq!(tray_state(true, true, 5, 5), TrayState::Paused);
-        assert_eq!(tray_state(true, false, 0, 0), TrayState::Paused);
+    fn the_users_pause_outranks_a_stuck_printer() {
+        assert_eq!(tray_state(true, true), TrayState::Paused);
+        assert_eq!(tray_state(true, false), TrayState::Paused);
     }
 
     #[test]
-    fn a_held_queue_or_a_broken_folder_or_a_recent_failure_shows_an_error() {
-        assert_eq!(tray_state(false, true, 0, 0), TrayState::Error);
-        assert_eq!(tray_state(false, false, 0, 1), TrayState::Error);
-        assert_eq!(tray_state(false, false, 1, 0), TrayState::Error);
+    fn a_held_queue_is_the_only_thing_that_turns_the_icon_coral() {
+        assert_eq!(tray_state(false, true), TrayState::Error);
     }
 
     #[test]
-    fn everything_healthy_and_running_shows_mint() {
-        assert_eq!(tray_state(false, false, 0, 0), TrayState::Running);
+    fn everything_running_shows_mint() {
+        assert_eq!(tray_state(false, false), TrayState::Running);
     }
 
     #[test]
@@ -4542,19 +4669,15 @@ impl TrayState {
     }
 }
 
-/// The user's own pause outranks everything: a deliberately stopped Printy must
-/// not shout. A held queue counts as an error even though no job failed —
-/// otherwise a switched-off printer would leave the tray cheerfully mint.
-pub fn tray_state(
-    user_paused: bool,
-    queue_held: bool,
-    recent_failures: i64,
-    folder_errors: i64,
-) -> TrayState {
+/// The user's own pause outranks a stuck printer: a deliberately stopped Printy
+/// must not shout. Beyond that the icon answers exactly one question — is the
+/// queue held? A single failed file is not a tray-level event; it is a row in
+/// Verlauf.
+pub fn tray_state(user_paused: bool, queue_held: bool) -> TrayState {
     if user_paused {
         return TrayState::Paused;
     }
-    if queue_held || recent_failures > 0 || folder_errors > 0 {
+    if queue_held {
         return TrayState::Error;
     }
     TrayState::Running
@@ -4658,9 +4781,10 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Keeps the tray colour in step with reality. The printer hold is runtime-only
-/// state that never reaches the database, so it is picked up from the very event
-/// the queue scheduler already emits.
+/// Keeps the tray colour in step with reality. Only two inputs matter: the
+/// persisted global pause, and the printer hold — runtime-only state that never
+/// reaches the database, so it is picked up from the very event the queue
+/// scheduler already emits.
 pub fn spawn_tray_updater(app: AppHandle) {
     let held = Arc::new(AtomicBool::new(false));
 
@@ -4686,27 +4810,7 @@ pub fn spawn_tray_updater(app: AppHandle) {
             };
 
             let paused = settings::user_paused(&db).await;
-            // Only recent failures colour the tray. An error from last week must
-            // not leave it permanently coral.
-            let recent_failures: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM print_job
-                 WHERE state = 'failed' AND finished_at >= datetime('now', '-1 hour')",
-            )
-            .fetch_one(&db)
-            .await
-            .unwrap_or(0);
-            let folder_errors: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM watch_folder WHERE status != 'ok'")
-                    .fetch_one(&db)
-                    .await
-                    .unwrap_or(0);
-
-            let next = tray_state(
-                paused,
-                held.load(Ordering::Relaxed),
-                recent_failures,
-                folder_errors,
-            );
+            let next = tray_state(paused, held.load(Ordering::Relaxed));
             if last == Some(next) {
                 continue;
             }
@@ -4799,7 +4903,7 @@ git commit -m "feat: add state-coloured tray icon, close-to-tray and minimised s
 - Modify: `src/App.tsx` (one hook call inside `App`)
 
 **Interfaces:**
-- Consumes: `lib/api::api`; `lib/events::{onJobEvent, onQueueEvent}`; `lib/types::{JobOutcome, NotificationMode, PrintJob}`; `@tauri-apps/plugin-notification`'s `isPermissionGranted`, `requestPermission`, `sendNotification`.
+- Consumes: `lib/api::api`; `lib/events::{onJobEvent, onQueueEvent}`; `lib/types::{JobOutcome, NotificationMode, PrintJob}`; `@tauri-apps/plugin-notification`'s `isPermissionGranted` and `sendNotification`. Permission is *requested* in Task 9's Einstellungen screen, never here.
 - Produces: `lib/notify::{shouldNotify, jobNotification, queueNotification, type Toast}`; `lib/useJobNotifications::useJobNotifications`.
 
 `printy://job` carries only the outcome — the debug name of `queue::worker::QueueOutcome` — so the file name has to be read back from the job ledger. For a failure that means the newest row from `list_jobs_cmd` with `only_failed = true`; for a success, the newest `done` row in the unfiltered page. Guessing from the plain newest row would name the wrong file whenever a job was enqueued in between.
@@ -4967,11 +5071,7 @@ Create `src/lib/useJobNotifications.ts`:
 ```ts
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from "@tauri-apps/plugin-notification";
+import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notification";
 import { api } from "./api";
 import { onJobEvent, onQueueEvent } from "./events";
 import { jobNotification, queueNotification, shouldNotify, type Toast } from "./notify";
@@ -4979,11 +5079,10 @@ import type { JobOutcome, NotificationMode, PrintJob } from "./types";
 
 async function deliver(toast: Toast | null): Promise<void> {
   if (toast === null) return;
-  let granted = await isPermissionGranted();
-  if (!granted) {
-    granted = (await requestPermission()) === "granted";
-  }
-  if (!granted) return;
+  // Only a check, never a prompt. Einstellungen asks for permission when the
+  // user switches notifications on; asking here would interrupt the very print
+  // this toast reports.
+  if (!(await isPermissionGranted())) return;
   sendNotification({ title: toast.title, body: toast.body });
 }
 
@@ -5089,21 +5188,30 @@ plan 1's Task 17:
    never hidden.
 6. Creating a folder with files already in it and the checkbox left alone prints
    nothing; ticking the checkbox prints them.
-7. Switching the printer off turns the tray icon coral and shows
-   "Wartet auf Drucker" on every enabled folder; switching it on restores mint.
-8. Closing the window keeps the tray icon and keeps printing; Beenden in the
-   tray menu stops the app.
-9. With autostart and "Minimiert starten" on, a reboot brings Printy back in the
-   tray with no window flash.
-10. Notification mode "Nur Fehler" stays silent on a successful print and toasts
+7. The Ordner screen offers exactly one way to add a folder — the dashed tile at
+   the end of the list.
+8. Switching the printer off turns the tray icon coral and shows
+   "Wartet auf Drucker" on every enabled folder; switching it on restores mint
+   without any further interaction.
+9. A single corrupt file that fails does **not** colour the tray — it appears in
+   Verlauf and the icon stays mint.
+10. Closing the window keeps the tray icon and keeps printing; Beenden in the
+    tray menu stops the app.
+11. With autostart and "Minimiert starten" on, a reboot brings Printy back in the
+    tray with no window flash.
+12. Switching the notification mode away from "Aus" prompts for permission once;
+    refusing it snaps the setting back to "Aus" and explains why.
+13. Notification mode "Nur Fehler" stays silent on a successful print and toasts
     on a failure; "Aus" stays silent for both.
-11. Switching to the dark theme repaints every screen, and the sidebar and logo
-    stay legible.
+14. Switching to the dark theme repaints every screen, and the sidebar and logo
+    stay legible; the choice survives a restart without any backend round-trip.
 
 ## What this plan does not cover
 
 The engine itself — watcher, intake, queue, print backends, database and the
-fourteen commands of spec section 11 — is plan 1's. This plan adds only three
-Rust commands (`count_existing_files_cmd`, `get_autostart_cmd`,
-`set_autostart_cmd`) and the `shell` module; it changes no existing backend
-behaviour.
+fourteen commands of spec section 11 — is plan 1's. This plan adds three Rust
+commands (`count_existing_files_cmd`, `get_autostart_cmd`, `set_autostart_cmd`)
+and the `shell` module, and makes exactly one subtraction from plan 1: the
+`theme` entry disappears from `commands::settings::KEYS`, because the theme is a
+per-device preference that lives in `localStorage`. No other backend behaviour
+changes.
