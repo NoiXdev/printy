@@ -1,5 +1,6 @@
 mod db;
 mod error;
+mod intake;
 mod print;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
