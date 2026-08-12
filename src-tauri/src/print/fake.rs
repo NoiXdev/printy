@@ -66,6 +66,7 @@ mod tests {
             copies: 2,
             duplex: DuplexMode::LongEdge,
             color: ColorMode::Mono,
+            fit_to_page: true,
         }
     }
 

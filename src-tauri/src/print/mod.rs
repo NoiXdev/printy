@@ -71,6 +71,12 @@ pub struct PrintRequest {
     pub copies: u32,
     pub duplex: DuplexMode,
     pub color: ColorMode,
+    /// Snapshotted from the folder's `fit_to_page` at enqueue time. `true`
+    /// scales content to fill the printable area, upscaling if necessary;
+    /// `false` prints at natural size but still shrinks oversized content.
+    /// Maps directly onto `print::layout::fit_centered`'s `allow_upscale`
+    /// parameter.
+    pub fit_to_page: bool,
 }
 
 /// Decides whether one job fails or the whole queue holds. See spec section 8.

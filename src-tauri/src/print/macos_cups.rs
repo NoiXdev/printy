@@ -32,6 +32,16 @@ pub fn parse_lpstat(out: &str) -> Vec<PrinterInfo> {
 }
 
 /// Builds the argument vector for `lp`. Pure, so it is unit-testable.
+///
+/// `fit_to_page = true` appends CUPS' own `-o fit-to-page`, which scales
+/// content to fill the media, upscaling when necessary. There is no CUPS
+/// option for "shrink to fit but never enlarge", so `fit_to_page = false`
+/// emits nothing extra: a PDF then prints at its embedded page size (and is
+/// clipped, not shrunk, if oversized) while several CUPS image filters
+/// already downscale oversized images by default. This asymmetry between
+/// PDFs and images when the flag is off is a known limitation of this
+/// development-only backend; the Windows GDI backend (Task 8) does not share
+/// it, since it rasterises and places pixels itself via `fit_centered`.
 pub fn lp_args(req: &PrintRequest) -> Vec<String> {
     let sides = match req.duplex {
         DuplexMode::Simplex => "sides=one-sided",
@@ -42,13 +52,18 @@ pub fn lp_args(req: &PrintRequest) -> Vec<String> {
         ColorMode::Color => "ColorModel=RGB",
         ColorMode::Mono => "ColorModel=Gray",
     };
-    vec![
-        "-d".into(), req.printer.clone(),
-        "-n".into(), req.copies.to_string(),
-        "-o".into(), sides.to_string(),
-        "-o".into(), color.to_string(),
-        req.file.to_string_lossy().to_string(),
-    ]
+    let mut args = vec![
+        "-d".to_string(), req.printer.clone(),
+        "-n".to_string(), req.copies.to_string(),
+        "-o".to_string(), sides.to_string(),
+        "-o".to_string(), color.to_string(),
+    ];
+    if req.fit_to_page {
+        args.push("-o".to_string());
+        args.push("fit-to-page".to_string());
+    }
+    args.push(req.file.to_string_lossy().to_string());
+    args
 }
 
 /// Classifies `lp`'s stderr. A missing or stopped destination is a printer-level
@@ -132,12 +147,14 @@ mod tests {
 
     #[test]
     fn builds_lp_arguments_for_duplex_mono() {
+        // fit_to_page = false: no CUPS fit-to-page flag is emitted.
         let req = PrintRequest {
             file: PathBuf::from("/tmp/a.pdf"),
             printer: "HP".into(),
             copies: 3,
             duplex: DuplexMode::LongEdge,
             color: ColorMode::Mono,
+            fit_to_page: false,
         };
         assert_eq!(
             lp_args(&req),
@@ -153,12 +170,14 @@ mod tests {
 
     #[test]
     fn builds_lp_arguments_for_simplex_color() {
+        // fit_to_page = false: no CUPS fit-to-page flag is emitted.
         let req = PrintRequest {
             file: PathBuf::from("/tmp/b.png"),
             printer: "P".into(),
             copies: 1,
             duplex: DuplexMode::Simplex,
             color: ColorMode::Color,
+            fit_to_page: false,
         };
         assert_eq!(
             lp_args(&req),
@@ -168,6 +187,31 @@ mod tests {
                 "-o", "sides=one-sided",
                 "-o", "ColorModel=RGB",
                 "/tmp/b.png",
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_lp_arguments_with_fit_to_page_appends_the_cups_flag() {
+        // fit_to_page = true: CUPS' own scale-to-fill option is appended
+        // after the duplex/color options and before the file path.
+        let req = PrintRequest {
+            file: PathBuf::from("/tmp/a.pdf"),
+            printer: "HP".into(),
+            copies: 1,
+            duplex: DuplexMode::Simplex,
+            color: ColorMode::Mono,
+            fit_to_page: true,
+        };
+        assert_eq!(
+            lp_args(&req),
+            vec![
+                "-d", "HP",
+                "-n", "1",
+                "-o", "sides=one-sided",
+                "-o", "ColorModel=Gray",
+                "-o", "fit-to-page",
+                "/tmp/a.pdf",
             ]
         );
     }

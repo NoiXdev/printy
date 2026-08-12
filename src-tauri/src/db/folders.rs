@@ -15,6 +15,7 @@ pub struct NewFolder {
     pub duplex: String,
     pub color_mode: String,
     pub post_action: String,
+    pub fit_to_page: bool,
 }
 
 fn clamp(n: &NewFolder) -> (i64, i64, String) {
@@ -29,11 +30,12 @@ pub async fn create_folder(db: &Db, n: &NewFolder) -> Result<WatchFolder, sqlx::
     sqlx::query_as::<_, WatchFolder>(
         "INSERT INTO watch_folder
            (name, path, poll_interval_secs, file_types, printer_name,
-            copies, duplex, color_mode, post_action)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+            copies, duplex, color_mode, post_action, fit_to_page)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
     )
     .bind(&n.name).bind(&n.path).bind(interval).bind(types).bind(&n.printer_name)
     .bind(copies).bind(&n.duplex).bind(&n.color_mode).bind(&n.post_action)
+    .bind(n.fit_to_page as i64)
     .fetch_one(db)
     .await
 }
@@ -57,11 +59,12 @@ pub async fn update_folder(db: &Db, id: i64, n: &NewFolder) -> Result<WatchFolde
         "UPDATE watch_folder SET
            name = ?, path = ?, poll_interval_secs = ?, file_types = ?,
            printer_name = ?, copies = ?, duplex = ?, color_mode = ?,
-           post_action = ?, updated_at = datetime('now')
+           post_action = ?, fit_to_page = ?, updated_at = datetime('now')
          WHERE id = ? RETURNING *",
     )
     .bind(&n.name).bind(&n.path).bind(interval).bind(types).bind(&n.printer_name)
-    .bind(copies).bind(&n.duplex).bind(&n.color_mode).bind(&n.post_action).bind(id)
+    .bind(copies).bind(&n.duplex).bind(&n.color_mode).bind(&n.post_action)
+    .bind(n.fit_to_page as i64).bind(id)
     .fetch_one(db)
     .await
 }
@@ -100,6 +103,7 @@ mod tests {
             duplex: "simplex".into(),
             color_mode: "mono".into(),
             post_action: "move".into(),
+            fit_to_page: true,
         }
     }
 
@@ -164,6 +168,7 @@ mod tests {
             duplex: "duplex".into(),
             color_mode: "color".into(),
             post_action: "delete".into(),
+            fit_to_page: false,
         };
 
         let f = update_folder(&db, f.id, &updated).await.unwrap();
@@ -178,6 +183,22 @@ mod tests {
         assert_eq!(f.duplex, "duplex");
         assert_eq!(f.color_mode, "color");
         assert_eq!(f.post_action, "delete");
+        assert_eq!(f.fit_to_page, 0);
         assert!(!f.updated_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fit_to_page_defaults_to_true_and_persists_through_an_update() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+        assert_eq!(f.fit_to_page, 1);
+
+        let mut off = sample();
+        off.fit_to_page = false;
+        let updated = update_folder(&db, f.id, &off).await.unwrap();
+        assert_eq!(updated.fit_to_page, 0);
+
+        let refetched = get_folder(&db, f.id).await.unwrap().unwrap();
+        assert_eq!(refetched.fit_to_page, 0);
     }
 }

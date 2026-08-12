@@ -34,18 +34,19 @@ pub struct NewJob {
     pub copies: i64,
     pub duplex: String,
     pub color_mode: String,
+    pub fit_to_page: bool,
 }
 
 pub async fn enqueue_job(db: &Db, n: &NewJob) -> Result<PrintJob, sqlx::Error> {
     sqlx::query_as::<_, PrintJob>(
         "INSERT INTO print_job
            (folder_id, file_path, file_name, size_bytes, mtime_ms, sha256,
-            state, printer_name, copies, duplex, color_mode)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?) RETURNING *",
+            state, printer_name, copies, duplex, color_mode, fit_to_page)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?) RETURNING *",
     )
     .bind(n.folder_id).bind(&n.file_path).bind(&n.file_name).bind(n.size_bytes)
     .bind(n.mtime_ms).bind(&n.sha256).bind(&n.printer_name).bind(n.copies)
-    .bind(&n.duplex).bind(&n.color_mode)
+    .bind(&n.duplex).bind(&n.color_mode).bind(n.fit_to_page as i64)
     .fetch_one(db)
     .await
 }
@@ -168,6 +169,7 @@ mod tests {
             name: "F".into(), path: "/tmp/f".into(), poll_interval_secs: 5,
             file_types: vec!["pdf".into()], printer_name: "P".into(), copies: 1,
             duplex: "simplex".into(), color_mode: "mono".into(), post_action: "move".into(),
+            fit_to_page: true,
         }).await.unwrap();
         (db, f.id)
     }
@@ -184,6 +186,7 @@ mod tests {
             copies: 1,
             duplex: "simplex".into(),
             color_mode: "mono".into(),
+            fit_to_page: true,
         }
     }
 
@@ -341,5 +344,31 @@ mod tests {
         assert_eq!(still_retrying.state, JobState::Retrying.as_str());
         let still_done = get_job(&db, done_one.id).await.unwrap().unwrap();
         assert_eq!(still_done.state, JobState::Done.as_str());
+    }
+
+    #[tokio::test]
+    async fn enqueue_job_snapshots_fit_to_page_onto_the_job() {
+        let (db, fid) = setup().await;
+
+        let mut off = job(fid, "a.pdf", "h1");
+        off.fit_to_page = false;
+        let j = enqueue_job(&db, &off).await.unwrap();
+        assert_eq!(j.fit_to_page, 0);
+
+        // A second job enqueued with the opposite flag proves the value is
+        // carried per-call from the `NewJob` the caller builds, not read back
+        // from live folder state — this is the snapshot semantics the spec
+        // requires: changing a folder's fit_to_page must never alter jobs
+        // already queued (the folder -> job copy itself happens in the
+        // not-yet-built queue/intake layer; this test covers the db layer's
+        // half of that contract, which is what `enqueue_job` owns).
+        let mut on = job(fid, "b.pdf", "h2");
+        on.fit_to_page = true;
+        let j2 = enqueue_job(&db, &on).await.unwrap();
+        assert_eq!(j2.fit_to_page, 1);
+
+        // The first job's row is untouched by the second enqueue.
+        let refetched = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(refetched.fit_to_page, 0);
     }
 }

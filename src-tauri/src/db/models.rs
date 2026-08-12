@@ -16,6 +16,7 @@ pub struct WatchFolder {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    pub fit_to_page: i64,
 }
 
 impl WatchFolder {
@@ -46,4 +47,5 @@ pub struct PrintJob {
     pub enqueued_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub fit_to_page: i64,
 }
