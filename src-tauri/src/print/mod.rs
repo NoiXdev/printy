@@ -1,7 +1,10 @@
 pub mod fake;
+pub mod layout;
 #[cfg(target_os = "macos")]
 pub mod macos_cups;
-pub mod layout;
+pub mod pdfium;
+#[cfg(target_os = "windows")]
+pub mod windows_gdi;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
