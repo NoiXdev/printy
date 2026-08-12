@@ -7,7 +7,6 @@ const KEYS: &[(&str, &str)] = &[
     ("notification_mode", "all"),
     ("autostart", "0"),
     ("start_minimized", "0"),
-    ("theme", "light"),
     ("sumatra_path", ""),
     ("user_paused", "0"),
 ];

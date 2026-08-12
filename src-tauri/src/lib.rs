@@ -58,6 +58,9 @@ pub fn run() {
             commands::settings::get_settings_cmd,
             commands::settings::update_setting_cmd,
             commands::settings::set_global_paused_cmd,
+            commands::shell::count_existing_files_cmd,
+            commands::shell::get_autostart_cmd,
+            commands::shell::set_autostart_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
