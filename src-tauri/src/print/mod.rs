@@ -1,8 +1,10 @@
+pub mod factory;
 pub mod fake;
 pub mod layout;
 #[cfg(target_os = "macos")]
 pub mod macos_cups;
 pub mod pdfium;
+pub mod sumatra;
 #[cfg(target_os = "windows")]
 pub mod windows_gdi;
 
