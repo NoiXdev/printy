@@ -1,0 +1,226 @@
+name: Release
+
+# Local on purpose. It follows the org convention in
+# NoiXdev/github-workflows/.github/workflows/create_tauri_changelog_version_release.yaml
+# and reuses that repo's composite actions, but it cannot call that reusable
+# workflow directly: Printy needs pdfium.dll fetched and verified before the
+# Windows build, and a build without it produces an app that starts normally and
+# then fails on the very first PDF. Folding that step into the shared workflow is
+# a separate piece of work.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build everything but skip commit, tag, release and uploads"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  # Pinned deliberately: "latest" would let an upstream release swap the binary
+  # between two builds of the same commit.
+  PDFIUM_RELEASE: chromium/7999
+
+jobs:
+  prepare:
+    name: Prepare version & release
+    runs-on: ubuntu-latest
+    outputs:
+      next: ${{ steps.ver.outputs.next }}
+      tag: ${{ steps.ver.outputs.tag }}
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Compute next version
+        id: ver
+        uses: NoiXdev/github-workflows/actions/compute-version@main
+        with:
+          bump: ${{ inputs.bump }}
+
+      - name: Set version across all files
+        uses: NoiXdev/github-workflows/actions/set-tauri-version@main
+        with:
+          version: ${{ steps.ver.outputs.next }}
+          tauri-dir: src-tauri
+
+      - name: Install dependencies (for changelog)
+        run: npm ci --ignore-scripts
+
+      - name: Generate CHANGELOG.md
+        id: changelog
+        # Text only. The version is owned by set-tauri-version above, so every
+        # skip-* is on to stop this action bumping, committing or tagging.
+        uses: TriPSs/conventional-changelog-action@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          preset: conventionalcommits
+          tag-prefix: "v"
+          output-file: CHANGELOG.md
+          release-count: 0
+          skip-commit: "true"
+          skip-tag: "true"
+          skip-bump: "true"
+          skip-version-file: "true"
+          skip-on-empty: "false"
+
+      - name: Commit bump + CHANGELOG and tag
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GIT_AUTHOR_NAME: noix-dev-bot
+          GIT_AUTHOR_EMAIL: noix-dev-bot@noix.dev
+          GIT_COMMITTER_NAME: noix-dev-bot
+          GIT_COMMITTER_EMAIL: noix-dev-bot@noix.dev
+        run: |
+          set -euo pipefail
+          git add package.json package-lock.json CHANGELOG.md \
+            src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "chore(release): ${{ steps.ver.outputs.tag }} [skip ci]"
+            git push origin HEAD:main
+          fi
+          git tag -a "${{ steps.ver.outputs.tag }}" -m "${{ steps.ver.outputs.tag }}"
+          git push origin "${{ steps.ver.outputs.tag }}"
+
+      - name: Create GitHub Release
+        id: release
+        if: ${{ inputs.dry_run == false }}
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+          prerelease: ${{ inputs.prerelease }}
+
+  build-windows:
+    name: Build Windows x64
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Not in the repository: an 8 MB third-party binary (BSD licensed, so
+      # redistribution is fine). Without it the installer looks healthy and the
+      # app fails on the first PDF, so fetch it explicitly and check it.
+      - name: Fetch pdfium
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The release tag contains a slash (chromium/7999); it must be
+          # percent-encoded or the download path splits and 404s.
+          tag_enc="${PDFIUM_RELEASE//\//%2F}"
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${tag_enc}/pdfium-win-x64.tgz"
+          echo "Fetching $url"
+          curl -fsSL -o pdfium.tgz "$url"
+          tar -xzf pdfium.tgz bin/pdfium.dll
+          mkdir -p src-tauri/resources
+          cp bin/pdfium.dll src-tauri/resources/pdfium.dll
+          ls -l src-tauri/resources/pdfium.dll
+
+      - name: Verify pdfium is a 64-bit DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A 32-bit DLL would package fine and fail at load time with an
+          # unhelpful message. 0x8664 = AMD64.
+          pe_off=$(od -An -tu4 -j60 -N4 src-tauri/resources/pdfium.dll | tr -d ' ')
+          machine=$(od -An -tx2 -j$((pe_off + 4)) -N2 src-tauri/resources/pdfium.dll | tr -d ' ')
+          echo "PE machine type: 0x$machine"
+          if [ "$machine" != "8664" ]; then
+            echo "::error::pdfium.dll is not x86_64 (machine type 0x$machine)"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Set version to release version
+        uses: NoiXdev/github-workflows/actions/set-tauri-version@main
+        with:
+          version: ${{ needs.prepare.outputs.next }}
+          tauri-dir: src-tauri
+
+      - name: Build installers & upload to release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # An empty releaseId on a dry run means tauri-action builds but
+          # uploads nothing.
+          releaseId: ${{ inputs.dry_run == false && needs.prepare.outputs.release_id || '' }}
+
+      # The installers carry pdfium.dll inside. The portable variant is only
+      # useful with the DLL beside it, so ship them zipped together rather than
+      # leaving the user to pair them up.
+      - name: Package portable variant
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-portable
+          # The crate is `printy` but productName is `Printy`, and Tauri renames
+          # the main binary to productName — find it rather than guess.
+          exe=$(find src-tauri/target/release -maxdepth 1 -iname 'printy.exe' | head -n1)
+          if [ -z "$exe" ]; then
+            echo "::error::No printy executable found in src-tauri/target/release"
+            ls -l src-tauri/target/release || true
+            exit 1
+          fi
+          cp "$exe" dist-portable/
+          cp src-tauri/resources/pdfium.dll dist-portable/
+          cd dist-portable
+          7z a "../Printy_${{ needs.prepare.outputs.next }}_x64-portable.zip" ./*
+          cd ..
+          ls -l "Printy_${{ needs.prepare.outputs.next }}_x64-portable.zip"
+
+      - name: Attach portable zip to release
+        if: ${{ inputs.dry_run == false }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ needs.prepare.outputs.tag }}" \
+            "Printy_${{ needs.prepare.outputs.next }}_x64-portable.zip" \
+            --clobber --repo "${{ github.repository }}"
