@@ -1,3 +1,4 @@
+mod commands;
 mod db;
 mod error;
 mod intake;
@@ -42,6 +43,22 @@ pub fn run() {
             queue::scheduler::spawn_queue_worker(app.handle().clone());
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            commands::folders::list_folders_cmd,
+            commands::folders::create_folder_cmd,
+            commands::folders::update_folder_cmd,
+            commands::folders::delete_folder_cmd,
+            commands::folders::set_folder_enabled_cmd,
+            commands::folders::scan_now_cmd,
+            commands::jobs::get_status_cmd,
+            commands::jobs::list_jobs_cmd,
+            commands::jobs::reprint_job_cmd,
+            commands::printers::list_printers_cmd,
+            commands::printers::printer_capabilities_cmd,
+            commands::settings::get_settings_cmd,
+            commands::settings::update_setting_cmd,
+            commands::settings::set_global_paused_cmd,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
