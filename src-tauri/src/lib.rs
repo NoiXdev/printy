@@ -4,6 +4,7 @@ mod error;
 mod intake;
 mod print;
 mod queue;
+mod shell;
 mod watcher;
 
 use tauri::Manager;
@@ -41,7 +42,27 @@ pub fn run() {
             app.manage(AppState { db, app_data: dir });
             watcher::scheduler::spawn_watchers(app.handle().clone());
             queue::scheduler::spawn_queue_worker(app.handle().clone());
+
+            shell::tray::setup_tray(app)?;
+            shell::tray::spawn_tray_updater(app.handle().clone());
+
+            // The window starts hidden (tauri.conf.json), so autostart lands in
+            // the tray. Show it unless the user asked for a minimised start.
+            let start_min = tauri::async_runtime::block_on(db::settings::start_minimized(
+                &app.state::<AppState>().db,
+            ));
+            if !start_min {
+                shell::tray::show_main(app.handle());
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing puts Printy in the tray instead of quitting it — the whole
+            // point of the app is that it keeps watching.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::folders::list_folders_cmd,
