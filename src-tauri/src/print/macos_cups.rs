@@ -6,29 +6,30 @@ use std::process::Command;
 
 pub struct CupsBackend;
 
-/// Parses `lpstat -p -d` output. Lines look like:
-///   printer NAME is idle.  enabled since ...
-///   system default destination: NAME
-pub fn parse_lpstat(out: &str) -> Vec<PrinterInfo> {
-    let mut printers: Vec<PrinterInfo> = Vec::new();
-    let mut default_name: Option<String> = None;
+/// Parses `lpstat -e` output: one destination name per line, no surrounding
+/// prose and — unlike `lpstat -p -d` — no localisation, so this is the only
+/// safe source of printer names on macOS.
+pub fn parse_printer_names(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 
-    for line in out.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("printer ") {
-            if let Some(name) = rest.split_whitespace().next() {
-                printers.push(PrinterInfo { name: name.to_string(), is_default: false });
-            }
-        } else if let Some(rest) = line.strip_prefix("system default destination: ") {
-            default_name = Some(rest.trim().to_string());
-        }
-    }
-    if let Some(d) = default_name {
-        for p in printers.iter_mut() {
-            p.is_default = p.name == d;
-        }
-    }
-    printers
+/// Resolves the default destination out of `lpstat -d`'s output, which is
+/// localised prose on macOS regardless of language. The destination name is
+/// always the last whitespace-separated token of the line in every language
+/// observed (English `system default destination: NAME`, German
+/// `System-Standardzielort: NAME`), so we take that token and accept it only
+/// if it also appears in `names` (from `lpstat -e`). That membership check is
+/// what makes this safe: when there is no default, the line is a sentence
+/// (e.g. "kein System-Standardzielort") whose last token will not match any
+/// real destination, so it correctly resolves to `None` instead of a bogus name.
+pub fn resolve_default(default_line: &str, names: &[String]) -> Option<String> {
+    let last = default_line.split_whitespace().last()?;
+    names.iter().find(|n| n.as_str() == last).cloned()
 }
 
 /// Builds the argument vector for `lp`. Pure, so it is unit-testable.
@@ -68,7 +69,20 @@ pub fn lp_args(req: &PrintRequest) -> Vec<String> {
 
 /// Classifies `lp`'s stderr. A missing or stopped destination is a printer-level
 /// problem that must hold the queue; anything else fails just this job.
-pub fn classify_stderr(stderr: &str) -> PrintErrorKind {
+///
+/// `stderr` text is localised on macOS just like `lpstat`'s, so it cannot be
+/// the sole signal: the primary check is whether `printer` still shows up in
+/// `live_destinations` (a fresh `lpstat -e` snapshot taken right after the
+/// failure). If it is absent, the destination is gone or disabled — `Printer`.
+/// If it is present, the English substrings are kept only as an *additional*
+/// way to reach `Printer` (e.g. a destination that is technically still
+/// enumerated but was just rejected outright); on a localised system they will
+/// simply never match, and the destination-membership check still applies.
+pub fn classify_stderr(stderr: &str, printer: &str, live_destinations: &[String]) -> PrintErrorKind {
+    let still_listed = live_destinations.iter().any(|d| d == printer);
+    if !still_listed {
+        return PrintErrorKind::Printer;
+    }
     if stderr.contains("does not exist") || stderr.contains("not accepting") {
         PrintErrorKind::Printer
     } else {
@@ -78,15 +92,34 @@ pub fn classify_stderr(stderr: &str) -> PrintErrorKind {
 
 impl PrintBackend for CupsBackend {
     fn list_printers(&self) -> Result<Vec<PrinterInfo>, PrintError> {
-        let out = Command::new("lpstat")
-            .args(["-p", "-d"])
-            // Force C locale to ensure English output regardless of system language.
-            // CUPS translates its stderr messages based on the system locale, which
-            // would break the error classification in the print method.
+        // `-e` lists destination names only, with no localised prose around
+        // them, so it is the only reliable source of names on macOS.
+        let names_out = Command::new("lpstat")
+            .arg("-e")
+            // NOTE: `LC_ALL=C` helps on Linux but is NOT sufficient on macOS —
+            // Apple's CUPS tools translate via the system language regardless
+            // of this variable. It is kept because it is harmless and does
+            // help elsewhere; do not rely on it here to get English prose.
             .env("LC_ALL", "C")
             .output()
             .map_err(|e| PrintError::config(format!("lpstat nicht ausführbar: {e}")))?;
-        Ok(parse_lpstat(&String::from_utf8_lossy(&out.stdout)))
+        let names = parse_printer_names(&String::from_utf8_lossy(&names_out.stdout));
+
+        let default_out = Command::new("lpstat")
+            .arg("-d")
+            .env("LC_ALL", "C")
+            .output()
+            .map_err(|e| PrintError::config(format!("lpstat nicht ausführbar: {e}")))?;
+        let default_line = String::from_utf8_lossy(&default_out.stdout);
+        let default = resolve_default(&default_line, &names);
+
+        Ok(names
+            .into_iter()
+            .map(|name| {
+                let is_default = default.as_deref() == Some(name.as_str());
+                PrinterInfo { name, is_default }
+            })
+            .collect())
     }
 
     fn capabilities(&self, _printer: &str) -> Result<PrinterCapabilities, PrintError> {
@@ -103,9 +136,10 @@ impl PrintBackend for CupsBackend {
         }
         let out = Command::new("lp")
             .args(lp_args(req))
-            // Force C locale to ensure English output regardless of system language.
-            // CUPS translates its stderr messages based on the system locale, which
-            // would break the error classification below.
+            // NOTE: `LC_ALL=C` helps on Linux but is NOT sufficient on macOS —
+            // Apple's CUPS tools translate stderr via the system language
+            // regardless of this variable. classify_stderr below therefore
+            // does not rely on English substrings alone; see its doc comment.
             .env("LC_ALL", "C")
             .output()
             .map_err(|e| PrintError::printer(format!("lp nicht ausführbar: {e}")))?;
@@ -113,7 +147,15 @@ impl PrintBackend for CupsBackend {
             return Ok(());
         }
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let kind = classify_stderr(&msg);
+        // Re-check whether the destination is still enumerated right after the
+        // failure. This is locale-independent, unlike matching stderr prose.
+        let live_destinations = Command::new("lpstat")
+            .arg("-e")
+            .env("LC_ALL", "C")
+            .output()
+            .map(|o| parse_printer_names(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default();
+        let kind = classify_stderr(&msg, &req.printer, &live_destinations);
         if kind == PrintErrorKind::Printer {
             Err(PrintError::printer(format!("Drucker nicht erreichbar: {msg}")))
         } else {
@@ -128,21 +170,72 @@ mod tests {
     use crate::print::{ColorMode, DuplexMode, PrintRequest};
     use std::path::PathBuf;
 
+    // Real output captured on the affected German-locale Mac. `lpstat -e` is
+    // never localised, which is exactly why it — and not `lpstat -p -d` — is
+    // the source of truth for printer names.
+    const REAL_LPSTAT_E: &str = "A3B___Develop_ineoPlus\n\
+        HP7C4D8F7C1334__HP_Color_Laser_MFP_178_179_\n";
+
+    // Real `lpstat -d` output captured on the same German-locale Mac.
+    const REAL_GERMAN_DEFAULT_LINE: &str =
+        "System-Standardzielort: HP7C4D8F7C1334__HP_Color_Laser_MFP_178_179_\n";
+
+    // Real `lpstat -p -d` prose captured on the same machine — the format the
+    // old, now-deleted `parse_lpstat` depended on and which broke silently
+    // under German localisation.
+    const REAL_GERMAN_LPSTAT_P_D: &str = "Drucker „A3B___Develop_ineoPlus“ ist inaktiv; aktiviert seit Mon Aug  3 07:13:51 2026\n\
+        Drucker „HP7C4D8F7C1334__HP_Color_Laser_MFP_178_179_“ ist inaktiv; aktiviert seit Sun Aug  9 18:17:48 2026\n\
+        System-Standardzielort: HP7C4D8F7C1334__HP_Color_Laser_MFP_178_179_\n";
+
     #[test]
-    fn parses_lpstat_output_and_marks_the_default() {
-        let out = "printer Brother_MFC is idle.  enabled since Mon\n\
-                   printer HP_LaserJet is idle.  enabled since Mon\n\
-                   system default destination: HP_LaserJet\n";
-        let list = parse_lpstat(out);
-        assert_eq!(list.len(), 2);
-        assert_eq!(list[0].name, "Brother_MFC");
-        assert!(!list[0].is_default);
-        assert!(list[1].is_default);
+    fn parse_printer_names_returns_both_names_from_real_lpstat_e_output() {
+        let names = parse_printer_names(REAL_LPSTAT_E);
+        assert_eq!(
+            names,
+            vec![
+                "A3B___Develop_ineoPlus".to_string(),
+                "HP7C4D8F7C1334__HP_Color_Laser_MFP_178_179_".to_string(),
+            ]
+        );
     }
 
     #[test]
-    fn returns_no_printers_for_empty_output() {
-        assert!(parse_lpstat("").is_empty());
+    fn parse_printer_names_skips_blank_lines_and_trims() {
+        assert!(parse_printer_names("").is_empty());
+        assert_eq!(parse_printer_names("\n  A  \n\n B \n"), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn resolve_default_extracts_name_from_real_german_default_line() {
+        let names = parse_printer_names(REAL_LPSTAT_E);
+        let default = resolve_default(REAL_GERMAN_DEFAULT_LINE, &names);
+        assert_eq!(
+            default,
+            Some("HP7C4D8F7C1334__HP_Color_Laser_MFP_178_179_".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_default_returns_none_when_last_token_is_not_a_known_destination() {
+        let names = parse_printer_names(REAL_LPSTAT_E);
+        // A plausible "no default set" message in a non-English language
+        // (French here, distinct from the German fixture above): its last
+        // token is an ordinary word, not a destination name.
+        let no_default_line = "Espace de destination par défaut du système : aucun";
+        assert_eq!(resolve_default(no_default_line, &names), None);
+    }
+
+    #[test]
+    fn old_localized_lpstat_p_d_prose_does_not_yield_real_printer_names() {
+        // The new parsing path never looks at `lpstat -p -d` output at all.
+        // Feeding it through parse_printer_names anyway (as if it were fed to
+        // the old code's input) must not produce the real destination names,
+        // proving the new code does not depend on that format.
+        let names = parse_printer_names(REAL_GERMAN_LPSTAT_P_D);
+        assert!(!names.contains(&"A3B___Develop_ineoPlus".to_string()));
+        assert!(
+            !names.contains(&"HP7C4D8F7C1334__HP_Color_Laser_MFP_178_179_".to_string())
+        );
     }
 
     #[test]
@@ -217,20 +310,44 @@ mod tests {
     }
 
     #[test]
-    fn classifies_missing_destination_as_printer_error() {
-        let stderr = "lp: Error - The printer or class does not exist.";
-        assert_eq!(classify_stderr(stderr), PrintErrorKind::Printer);
+    fn classifies_as_printer_error_when_destination_no_longer_listed() {
+        // Locale-independent path: the destination vanished from a fresh
+        // `lpstat -e`, so it does not matter what stderr says (here: German
+        // prose, which the old substring check could never have matched).
+        let stderr = "lp: Fehler - Der Drucker oder die Klasse ist nicht vorhanden.";
+        let live: Vec<String> = vec!["OtherPrinter".to_string()];
+        assert_eq!(
+            classify_stderr(stderr, "HP", &live),
+            PrintErrorKind::Printer
+        );
     }
 
     #[test]
-    fn classifies_not_accepting_as_printer_error() {
-        let stderr = "lp: Error - Destination \"HP\" is not accepting jobs.";
-        assert_eq!(classify_stderr(stderr), PrintErrorKind::Printer);
-    }
-
-    #[test]
-    fn classifies_unrelated_failure_as_file_error() {
+    fn classifies_as_file_error_when_destination_still_listed_and_stderr_is_unrelated() {
         let stderr = "lp: Error - Unable to open file: No such file or directory";
-        assert_eq!(classify_stderr(stderr), PrintErrorKind::File);
+        let live = vec!["HP".to_string()];
+        assert_eq!(classify_stderr(stderr, "HP", &live), PrintErrorKind::File);
+    }
+
+    #[test]
+    fn english_does_not_exist_substring_is_an_additional_path_to_printer_error() {
+        // Destination is still enumerated, but the English substring check
+        // is kept as an extra way to reach `Printer` — never the sole basis.
+        let stderr = "lp: Error - The printer or class does not exist.";
+        let live = vec!["HP".to_string()];
+        assert_eq!(
+            classify_stderr(stderr, "HP", &live),
+            PrintErrorKind::Printer
+        );
+    }
+
+    #[test]
+    fn english_not_accepting_substring_is_an_additional_path_to_printer_error() {
+        let stderr = "lp: Error - Destination \"HP\" is not accepting jobs.";
+        let live = vec!["HP".to_string()];
+        assert_eq!(
+            classify_stderr(stderr, "HP", &live),
+            PrintErrorKind::Printer
+        );
     }
 }
