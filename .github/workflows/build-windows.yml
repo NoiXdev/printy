@@ -1,0 +1,140 @@
+name: Build Windows
+
+# Self-contained on purpose: no reusable or shared workflows, everything this
+# build needs is declared here.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "feat/**"]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  # Pinning the pdfium release keeps builds reproducible. "latest" would let an
+  # upstream release change the binary under us between two builds of the same
+  # commit. Bump this deliberately.
+  PDFIUM_RELEASE: chromium/7999
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      # Both variants are built even if one fails, so a broken installer does
+      # not also cost us the portable build.
+      fail-fast: false
+      matrix:
+        include:
+          # Just the executable. Needs pdfium.dll placed next to it.
+          - variant: portable
+            tauri_args: "--no-bundle"
+          # NSIS and MSI installers, with pdfium.dll carried inside.
+          - variant: bundle
+            tauri_args: ""
+
+    name: windows-x64-${{ matrix.variant }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # pdfium.dll is not in the repository: it is an 8 MB third-party binary
+      # (BSD licensed, so redistribution is fine). Without it the app starts
+      # normally and then fails on the first PDF, which is a confusing failure
+      # for an end user — so the build fetches it explicitly and verifies it.
+      - name: Fetch pdfium
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/pdfium-win-x64.tgz"
+          echo "Fetching $url"
+          curl -fsSL -o pdfium.tgz "$url"
+          tar -xzf pdfium.tgz bin/pdfium.dll
+          mkdir -p src-tauri/resources
+          cp bin/pdfium.dll src-tauri/resources/pdfium.dll
+          ls -l src-tauri/resources/pdfium.dll
+
+      - name: Verify pdfium is a 64-bit DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A 32-bit DLL would install fine and fail at load time with an
+          # unhelpful message, so check the PE machine type up front.
+          # 0x8664 = AMD64, little-endian in the file.
+          pe_off=$(od -An -tu4 -j60 -N4 src-tauri/resources/pdfium.dll | tr -d ' ')
+          machine=$(od -An -tx2 -j$((pe_off + 4)) -N2 src-tauri/resources/pdfium.dll | tr -d ' ')
+          echo "PE machine type: 0x$machine"
+          if [ "$machine" != "8664" ]; then
+            echo "::error::pdfium.dll is not x86_64 (machine type 0x$machine)"
+            exit 1
+          fi
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Build
+        run: npm run tauri -- build ${{ matrix.tauri_args }}
+
+      # The portable variant is only useful with the DLL beside it, so ship
+      # them together rather than leaving the user to pair them up.
+      - name: Stage portable output
+        if: matrix.variant == 'portable'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-portable
+          # The crate is named `printy` but productName is `Printy`, and Tauri
+          # renames the main binary to productName. Rather than guess which one
+          # lands on disk, find it — and fail loudly if neither does, instead of
+          # uploading an artifact containing only the DLL.
+          exe=$(find src-tauri/target/release -maxdepth 1 -iname 'printy.exe' | head -n1)
+          if [ -z "$exe" ]; then
+            echo "::error::No printy executable found in src-tauri/target/release"
+            ls -l src-tauri/target/release || true
+            exit 1
+          fi
+          echo "Found $exe"
+          cp "$exe" dist-portable/
+          cp src-tauri/resources/pdfium.dll dist-portable/
+          ls -l dist-portable
+
+      - name: Upload portable
+        if: matrix.variant == 'portable'
+        uses: actions/upload-artifact@v4
+        with:
+          name: printy-windows-x64-portable-${{ github.sha }}
+          path: dist-portable/*
+          # Never publish an empty artifact: a missing file must fail the build,
+          # not produce a download that turns out to be empty.
+          if-no-files-found: error
+
+      - name: Upload installers
+        if: matrix.variant == 'bundle'
+        uses: actions/upload-artifact@v4
+        with:
+          name: printy-windows-x64-installers-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
