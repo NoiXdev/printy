@@ -147,4 +147,37 @@ mod tests {
         delete_folder(&db, f.id).await.unwrap();
         assert!(get_folder(&db, f.id).await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    async fn update_folder_changes_every_field() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+        let original_id = f.id;
+
+        let updated = NewFolder {
+            name: "Invoices".into(),
+            path: "/tmp/printy-invoices".into(),
+            poll_interval_secs: 10,
+            file_types: vec!["tiff".into(), "jpg".into()],
+            printer_name: "Xerox".into(),
+            copies: 3,
+            duplex: "duplex".into(),
+            color_mode: "color".into(),
+            post_action: "delete".into(),
+        };
+
+        let f = update_folder(&db, f.id, &updated).await.unwrap();
+
+        assert_eq!(f.id, original_id);
+        assert_eq!(f.name, "Invoices");
+        assert_eq!(f.path, "/tmp/printy-invoices");
+        assert_eq!(f.poll_interval_secs, 10);
+        assert_eq!(f.types(), vec!["tiff".to_string(), "jpg".to_string()]);
+        assert_eq!(f.printer_name, "Xerox");
+        assert_eq!(f.copies, 3);
+        assert_eq!(f.duplex, "duplex");
+        assert_eq!(f.color_mode, "color");
+        assert_eq!(f.post_action, "delete");
+        assert!(!f.updated_at.is_empty());
+    }
 }
