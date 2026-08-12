@@ -1,4 +1,5 @@
 pub mod models;
+pub mod folders;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
