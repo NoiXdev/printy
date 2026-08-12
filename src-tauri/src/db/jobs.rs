@@ -253,4 +253,93 @@ mod tests {
         assert_eq!(back.error_message.as_deref(), Some("PDF nicht lesbar"));
         assert!(back.finished_at.is_some());
     }
+
+    #[tokio::test]
+    async fn mark_done_clears_stale_error_fields() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_printing(&db, j.id).await.unwrap();
+        // Set error fields via mark_retrying
+        mark_retrying(&db, j.id, "file", "kaputt", 10_000).await.unwrap();
+        let with_errors = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(with_errors.error_kind.as_deref(), Some("file"));
+        assert_eq!(with_errors.error_message.as_deref(), Some("kaputt"));
+        assert_eq!(with_errors.next_attempt_at, Some(10_000));
+        // Resume printing and mark done
+        mark_printing(&db, j.id).await.unwrap();
+        mark_done(&db, j.id).await.unwrap();
+        let cleaned = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(cleaned.state, JobState::Done.as_str());
+        assert_eq!(cleaned.error_kind.as_deref(), None);
+        assert_eq!(cleaned.error_message.as_deref(), None);
+        assert_eq!(cleaned.next_attempt_at, None);
+        assert!(cleaned.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn mark_printing_sets_started_at() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        let queued = get_job(&db, j.id).await.unwrap().unwrap();
+        assert!(queued.started_at.is_none());
+        mark_printing(&db, j.id).await.unwrap();
+        let printing = get_job(&db, j.id).await.unwrap().unwrap();
+        assert!(printing.started_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn requeue_clears_a_previously_set_next_attempt_at() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_printing(&db, j.id).await.unwrap();
+        // Set a far-future next_attempt_at via mark_retrying
+        mark_retrying(&db, j.id, "file", "kaputt", 1_000_000).await.unwrap();
+        let retrying = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(retrying.attempts, 1);
+        assert_eq!(retrying.next_attempt_at, Some(1_000_000));
+        // Resume printing and requeue
+        mark_printing(&db, j.id).await.unwrap();
+        requeue_job(&db, j.id).await.unwrap();
+        let requeued = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(requeued.state, JobState::Queued.as_str());
+        assert_eq!(requeued.attempts, 1);  // attempt still consumed
+        assert_eq!(requeued.next_attempt_at, None);  // but backoff cleared
+        assert_eq!(requeued.started_at, None);
+        // Job must be visible to next_due_job at a time well before the far-future timestamp
+        let due = next_due_job(&db, 0).await.unwrap().unwrap();
+        assert_eq!(due.id, j.id);
+        assert_eq!(due.file_name, "a.pdf");
+    }
+
+    #[tokio::test]
+    async fn recover_interrupted_touches_only_printing_jobs() {
+        let (db, fid) = setup().await;
+        // Create four jobs in different states
+        let queued = enqueue_job(&db, &job(fid, "q.pdf", "h_queued")).await.unwrap();
+        let printing_one = enqueue_job(&db, &job(fid, "p.pdf", "h_printing")).await.unwrap();
+        mark_printing(&db, printing_one.id).await.unwrap();
+        let retrying_one = enqueue_job(&db, &job(fid, "r.pdf", "h_retrying")).await.unwrap();
+        mark_printing(&db, retrying_one.id).await.unwrap();
+        mark_retrying(&db, retrying_one.id, "file", "kaputt", 10_000).await.unwrap();
+        let done_one = enqueue_job(&db, &job(fid, "d.pdf", "h_done")).await.unwrap();
+        mark_printing(&db, done_one.id).await.unwrap();
+        mark_done(&db, done_one.id).await.unwrap();
+
+        // Call recover_interrupted
+        let affected = recover_interrupted(&db).await.unwrap();
+        assert_eq!(affected, 1);  // Only the printing job should be affected
+
+        // Verify the printing job is now failed with the right error
+        let recovered = get_job(&db, printing_one.id).await.unwrap().unwrap();
+        assert_eq!(recovered.state, JobState::Failed.as_str());
+        assert_eq!(recovered.error_kind.as_deref(), Some("interrupted"));
+
+        // Verify the other three are unchanged
+        let still_queued = get_job(&db, queued.id).await.unwrap().unwrap();
+        assert_eq!(still_queued.state, JobState::Queued.as_str());
+        let still_retrying = get_job(&db, retrying_one.id).await.unwrap().unwrap();
+        assert_eq!(still_retrying.state, JobState::Retrying.as_str());
+        let still_done = get_job(&db, done_one.id).await.unwrap().unwrap();
+        assert_eq!(still_done.state, JobState::Done.as_str());
+    }
 }
