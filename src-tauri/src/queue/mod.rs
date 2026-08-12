@@ -1,3 +1,4 @@
+pub mod scheduler;
 pub mod worker;
 
 /// Retry schedule from the spec: 5 s, 30 s, 120 s, three attempts total.
