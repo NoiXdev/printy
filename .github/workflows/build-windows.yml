@@ -60,7 +60,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/pdfium-win-x64.tgz"
+          # The release tag contains a slash (chromium/7999). It has to be
+          # percent-encoded or it splits the URL path and the download 404s.
+          tag_enc="${PDFIUM_RELEASE//\//%2F}"
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${tag_enc}/pdfium-win-x64.tgz"
           echo "Fetching $url"
           curl -fsSL -o pdfium.tgz "$url"
           tar -xzf pdfium.tgz bin/pdfium.dll
