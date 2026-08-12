@@ -16,6 +16,24 @@ import {
   parseFileTypes,
   stabilityHint,
 } from "../lib/format";
+import SearchSelect from "./SearchSelect";
+
+const DUPLEX_OPTIONS: { value: DuplexMode; label: string }[] = [
+  { value: "simplex", label: "Einseitig" },
+  { value: "long_edge", label: "Duplex (lange Kante)" },
+  { value: "short_edge", label: "Duplex (kurze Kante)" },
+];
+
+const COLOR_OPTIONS: { value: ColorMode; label: string }[] = [
+  { value: "mono", label: "Schwarz-weiß" },
+  { value: "color", label: "Farbe" },
+];
+
+const POST_ACTION_OPTIONS: { value: PostAction; label: string }[] = [
+  { value: "move", label: "In Unterordner verschieben" },
+  { value: "keep", label: "Liegen lassen" },
+  { value: "delete", label: "Löschen" },
+];
 
 export interface FolderDialogResult {
   folder: NewFolder;
@@ -247,21 +265,18 @@ export default function FolderDialog({
 
         <div className="field">
           <label htmlFor="fd-printer">Drucker</label>
-          <select
+          <SearchSelect<string>
             id="fd-printer"
-            className="input"
             value={form.printerName}
-            onChange={(e) => {
-              setForm((f) => ({ ...f, printerName: e.target.value }));
-              onPrinterChange(e.target.value);
+            onChange={(printerName) => {
+              setForm((f) => ({ ...f, printerName }));
+              onPrinterChange(printerName);
             }}
-          >
-            {printers.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.is_default ? `${p.name} (Standard)` : p.name}
-              </option>
-            ))}
-          </select>
+            options={printers.map((p) => ({
+              value: p.name,
+              label: p.is_default ? `${p.name} (Standard)` : p.name,
+            }))}
+          />
         </div>
 
         <div className="row">
@@ -281,19 +296,13 @@ export default function FolderDialog({
 
           <div className="field" style={{ flex: 1 }}>
             <label htmlFor="fd-duplex">Duplex</label>
-            <select
+            <SearchSelect<DuplexMode>
               id="fd-duplex"
-              className="input"
               disabled={!canDuplex}
               value={form.duplex}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, duplex: e.target.value as DuplexMode }))
-              }
-            >
-              <option value="simplex">Einseitig</option>
-              <option value="long_edge">Duplex (lange Kante)</option>
-              <option value="short_edge">Duplex (kurze Kante)</option>
-            </select>
+              onChange={(duplex) => setForm((f) => ({ ...f, duplex }))}
+              options={DUPLEX_OPTIONS}
+            />
             {!canDuplex && <p className="helper">{UNSUPPORTED}</p>}
           </div>
         </div>
@@ -301,35 +310,24 @@ export default function FolderDialog({
         <div className="row">
           <div className="field" style={{ flex: 1 }}>
             <label htmlFor="fd-color">Farbe</label>
-            <select
+            <SearchSelect<ColorMode>
               id="fd-color"
-              className="input"
               disabled={!canColor}
               value={form.colorMode}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, colorMode: e.target.value as ColorMode }))
-              }
-            >
-              <option value="mono">Schwarz-weiß</option>
-              <option value="color">Farbe</option>
-            </select>
+              onChange={(colorMode) => setForm((f) => ({ ...f, colorMode }))}
+              options={COLOR_OPTIONS}
+            />
             {!canColor && <p className="helper">{UNSUPPORTED}</p>}
           </div>
 
           <div className="field" style={{ flex: 1 }}>
             <label htmlFor="fd-post">Nach dem Druck</label>
-            <select
+            <SearchSelect<PostAction>
               id="fd-post"
-              className="input"
               value={form.postAction}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, postAction: e.target.value as PostAction }))
-              }
-            >
-              <option value="move">In Unterordner verschieben</option>
-              <option value="keep">Liegen lassen</option>
-              <option value="delete">Löschen</option>
-            </select>
+              onChange={(postAction) => setForm((f) => ({ ...f, postAction }))}
+              options={POST_ACTION_OPTIONS}
+            />
           </div>
         </div>
 

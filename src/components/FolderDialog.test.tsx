@@ -84,19 +84,18 @@ describe("FolderDialog printer capabilities", () => {
 
   it("preselects the system default printer when creating", () => {
     renderDialog();
-    expect(screen.getByLabelText("Drucker")).toHaveValue("HP LaserJet");
+    expect(screen.getByLabelText("Drucker")).toHaveTextContent("HP LaserJet (Standard)");
   });
 
   it("keeps the folder's own printer when editing", () => {
     renderDialog({ folder: existing() });
-    expect(screen.getByLabelText("Drucker")).toHaveValue("Brother MFC");
+    expect(screen.getByLabelText("Drucker")).toHaveTextContent("Brother MFC");
   });
 
   it("asks the parent to refetch capabilities when the printer changes", () => {
     const { onPrinterChange } = renderDialog();
-    fireEvent.change(screen.getByLabelText("Drucker"), {
-      target: { value: "Brother MFC" },
-    });
+    fireEvent.click(screen.getByLabelText("Drucker"));
+    fireEvent.mouseDown(screen.getByText("Brother MFC"));
     expect(onPrinterChange).toHaveBeenCalledWith("Brother MFC");
   });
 });
@@ -225,9 +224,9 @@ describe("FolderDialog form", () => {
     expect(screen.getByLabelText("Ordner")).toHaveValue("/Users/tim/Scans");
     expect(screen.getByLabelText("Prüfintervall (Sekunden)")).toHaveValue(30);
     expect(screen.getByLabelText("Kopien")).toHaveValue(3);
-    expect(screen.getByLabelText("Duplex")).toHaveValue("long_edge");
-    expect(screen.getByLabelText("Farbe")).toHaveValue("color");
-    expect(screen.getByLabelText("Nach dem Druck")).toHaveValue("keep");
+    expect(screen.getByLabelText("Duplex")).toHaveTextContent("Duplex (lange Kante)");
+    expect(screen.getByLabelText("Farbe")).toHaveTextContent("Farbe");
+    expect(screen.getByLabelText("Nach dem Druck")).toHaveTextContent("Liegen lassen");
     expect(screen.getByLabelText("Inhalt an Seite anpassen")).toBeChecked();
     expect(screen.getByRole("button", { name: "Speichern" })).toBeInTheDocument();
   });

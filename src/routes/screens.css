@@ -89,6 +89,72 @@
 .row { display: flex; gap: 0.75rem; align-items: flex-end; }
 .row .field { margin-bottom: 0; }
 
+/* ---- SearchSelect combobox ----------------------------------------------- */
+.ss {
+  position: relative;
+}
+.ss-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.ss-placeholder {
+  color: var(--ink-45);
+}
+.ss-caret {
+  color: var(--ink-45);
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+.ss-pop {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--ink-12);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+.ss-search {
+  width: 100%;
+}
+.ss-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.ss-option {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--ink);
+}
+.ss-option:hover,
+.ss-option.active {
+  background: var(--mint-soft);
+}
+.ss-option.selected {
+  color: var(--mint);
+  font-weight: 600;
+}
+.ss-empty {
+  padding: 0.5rem 0.6rem;
+  color: var(--ink-45);
+  font-size: 0.9rem;
+}
+
 /* ---- Buttons ------------------------------------------------------------ */
 .btn {
   font: inherit;
