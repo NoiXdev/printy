@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from "react";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import Folders from "./routes/Folders";
+import Settings from "./routes/Settings";
 import Logo from "./components/Logo";
 import "./App.css";
 
@@ -11,12 +12,14 @@ interface NavItem {
   end?: boolean;
 }
 
-// Verlauf and Über are cut from this build by explicit deadline decision, and
-// Einstellungen has no screen yet either (it shares the not-yet-built Task 9
-// with Über). Only Ordner has a real route, so it is the only entry here — a
-// route pointing at a component that does not exist would be worse than a
-// short sidebar.
-const NAV_ITEMS: NavItem[] = [{ to: "/", label: "Ordner", icon: "📁", end: true }];
+// Verlauf and Über are cut from this build by explicit deadline decision.
+// Einstellungen now has a real screen (Task 9), so it joins Ordner here — a
+// route pointing at a component that does not exist would still be worse than
+// a short sidebar, which is why Verlauf and Über stay out.
+const NAV_ITEMS: NavItem[] = [
+  { to: "/", label: "Ordner", icon: "📁", end: true },
+  { to: "/einstellungen", label: "Einstellungen", icon: "⚙️" },
+];
 
 function Sidebar(): JSX.Element {
   return (
@@ -47,6 +50,7 @@ function App(): JSX.Element {
         <main className="content">
           <Routes>
             <Route path="/" element={<Folders />} />
+            <Route path="/einstellungen" element={<Settings />} />
           </Routes>
         </main>
       </div>

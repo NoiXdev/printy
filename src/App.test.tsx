@@ -30,21 +30,23 @@ function renderApp() {
   );
 }
 
-// Verlauf, Einstellungen and Über are not part of this build yet (see the
-// task report): Verlauf and Über were cut by explicit deadline decision, and
-// Einstellungen shares the not-yet-built Task 9 with Über. Only Ordner has a
-// real route, so the navigation currently offers exactly that one entry.
+// Verlauf and Über are cut from this build by explicit deadline decision and
+// must not point at nonexistent components. Einstellungen now has a real
+// screen (Task 9), so the navigation offers exactly Ordner and Einstellungen.
 describe("App shell", () => {
   it("renders the brand lockup in the sidebar", () => {
     renderApp();
     expect(screen.getByText("Printy")).toBeInTheDocument();
   });
 
-  it("offers the Ordner navigation entry", () => {
+  it("offers the Ordner and Einstellungen navigation entries", () => {
     renderApp();
     const nav = screen.getByRole("navigation", { name: "Hauptnavigation" });
     const links = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
-    expect(links).toEqual([expect.stringContaining("Ordner")]);
+    expect(links).toEqual([
+      expect.stringContaining("Ordner"),
+      expect.stringContaining("Einstellungen"),
+    ]);
   });
 
   it("marks Ordner as the active start route", () => {
