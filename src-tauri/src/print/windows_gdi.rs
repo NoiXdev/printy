@@ -16,9 +16,9 @@ use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Gdi::{
     CreateDCW, DeleteDC, GetDeviceCaps, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DEVMODEW, DIB_RGB_COLORS, DMCOLOR_COLOR, DMCOLOR_MONOCHROME, DMDUP_HORIZONTAL, DMDUP_SIMPLEX,
-    DMDUP_VERTICAL, DM_COLOR, DM_COPIES, DM_DUPLEX, DM_IN_BUFFER, DM_OUT_BUFFER, GDI_ERROR, HDC,
-    HORZRES, LOGPIXELSX, SRCCOPY, VERTRES,
+    DEVMODEW, DIB_RGB_COLORS, DMCOLLATE_TRUE, DMCOLOR_COLOR, DMCOLOR_MONOCHROME,
+    DMDUP_HORIZONTAL, DMDUP_SIMPLEX, DMDUP_VERTICAL, DM_COLLATE, DM_COLOR, DM_COPIES, DM_DUPLEX,
+    DM_IN_BUFFER, DM_OUT_BUFFER, GDI_ERROR, HDC, HORZRES, LOGPIXELSX, SRCCOPY, VERTRES,
 };
 use windows::Win32::Graphics::Printing::{
     ClosePrinter, DocumentPropertiesW, EnumPrintersW, GetDefaultPrinterW, OpenPrinterW,
@@ -137,9 +137,9 @@ unsafe fn build_devmode(
         ));
     }
 
-    (*dm).dmFields |= DM_COPIES | DM_DUPLEX | DM_COLOR;
-    // `dmCopies` lives in the first anonymous union; `dmDuplex` and `dmColor`
-    // are plain fields of DEVMODEW.
+    (*dm).dmFields |= DM_COPIES | DM_DUPLEX | DM_COLOR | DM_COLLATE;
+    // `dmCopies` lives in the first anonymous union; `dmDuplex`, `dmColor` and
+    // `dmCollate` are plain fields of DEVMODEW.
     (*dm).Anonymous1.Anonymous1.dmCopies = req.copies.clamp(1, i16::MAX as u32) as i16;
     (*dm).dmDuplex = match req.duplex {
         DuplexMode::Simplex => DMDUP_SIMPLEX,
@@ -150,6 +150,10 @@ unsafe fn build_devmode(
         ColorMode::Color => DMCOLOR_COLOR,
         ColorMode::Mono => DMCOLOR_MONOCHROME,
     };
+    // Without this, multi-copy jobs come out in whatever page order the
+    // driver defaults to — three copies of a three-page document could print
+    // as page1 x3, page2 x3, page3 x3 instead of three complete sets.
+    (*dm).dmCollate = DMCOLLATE_TRUE;
 
     // Merge pass: the driver validates the patched fields and silently drops
     // anything the device cannot do. Failure here is not fatal — the DEVMODE
@@ -186,7 +190,12 @@ unsafe fn open_dc(req: &PrintRequest) -> Result<(HDC, i32), PrintError> {
         Some(devmode.as_ptr().cast::<DEVMODEW>()),
     );
     if hdc.is_invalid() {
-        return Err(PrintError::printer(
+        // Spec §9.2: Sumatra is consulted "when a rendering fails, or when no
+        // device context can be created" — so this must be a File error, not
+        // a Printer error, or factory::backend's fallback branch (which only
+        // triggers for non-Printer kinds) can never be reached and a single
+        // bad device context holds the entire queue instead of falling back.
+        return Err(PrintError::file(
             "Kein Gerätekontext für den Drucker".to_string(),
         ));
     }
@@ -276,8 +285,11 @@ unsafe fn print_one_page(
     );
     // On success this is the number of scanlines copied, which some printer
     // drivers legitimately report as 0. Only GDI_ERROR signals a real failure.
+    // This is a rendering problem, not a printer problem (spec §9.2), so it is
+    // classified as File: it lets the Sumatra fallback be tried for this job
+    // instead of holding the whole queue for what is really a bad blit.
     if copied == GDI_ERROR {
-        return Err(PrintError::printer(
+        return Err(PrintError::file(
             "Seiteninhalt konnte nicht übertragen werden".to_string(),
         ));
     }
