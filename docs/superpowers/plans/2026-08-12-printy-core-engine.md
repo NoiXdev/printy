@@ -4189,3 +4189,1251 @@ Deliberately deferred to the follow-up UI plan: branding and the Printy logo,
 screens, the folder dialog with capability-driven control disabling, the tray
 icon and its state colours, close-to-tray, autostart wiring, desktop
 notifications, and the frontend test suite.
+
+---
+
+### Task 18: Per-folder fit-to-page flag
+
+> **Execution order note:** despite its number, this task is executed
+> **immediately after Task 7 and before Task 8**, per an amendment to the spec
+> made after this plan was written (see "Amended after review (2026-08-12):
+> per-folder fit mode" in `docs/superpowers/specs/2026-08-12-printy-design.md`).
+> It assumes Tasks 1–7 are complete and Task 8 (Windows GDI) has not started.
+> **Consequence for Task 8:** when `src-tauri/src/print/windows_gdi.rs` is
+> written, its call `fit_centered(w, h, area_w, area_h)` (as drafted in this
+> plan) must become `fit_centered(w, h, area_w, area_h, req.fit_to_page)` —
+> the job's snapshotted flag, never a hardcoded `true`. Tasks 9–17 as drafted
+> in this plan also construct `NewFolder { .. }`, `NewJob { .. }` and
+> `PrintRequest { .. }` literals that predate this flag; when each of those
+> tasks is executed, its literals must gain a `fit_to_page` value (the plan
+> text for those tasks is intentionally left untouched here — see the
+> self-review note this task's author appended in the handoff).
+
+Each watch folder gets a `fit_to_page` flag (default on): on, content is
+scaled to fill the printable area preserving aspect ratio, upscaling if
+necessary; off, content prints at natural size, centred, but is still shrunk
+if it is larger than the printable area — "off" means *never enlarge*, not
+*never scale*. The flag is snapshotted onto the job at enqueue time, exactly
+like `printer_name` and `copies`, so editing a folder never changes jobs
+already queued.
+
+The effective scale with `allow_upscale = false` is
+`min(area_w/src_w, area_h/src_h, 1.0)` — one clamp, no branching: oversized
+content shrinks, undersized content stays natural size, centring is
+unchanged either way.
+
+**Known limitation of the macOS/CUPS backend:** CUPS' own `-o fit-to-page`
+option scales content to fill the media, upscaling when necessary — it is the
+right match for `fit_to_page = true`. There is no CUPS job option that means
+"shrink to fit but never enlarge." Omitting `fit-to-page` prints a PDF at its
+page-embedded size (oversized pages are then clipped by the printer, not
+shrunk) while several of CUPS' image filters already downscale oversized
+images to the media by default — the two file types do not behave alike with
+the flag absent. `lp_args` therefore only ever *adds* `-o fit-to-page` for
+`fit_to_page = true` and otherwise emits nothing extra; it cannot reliably
+guarantee "never enlarge, but always shrink" on this development backend. The
+Windows GDI backend (Task 8) does not share this limitation, because it
+rasterises pages itself and places the bitmap with `fit_centered`, which
+implements the exact clamp above.
+
+**Files:**
+- Create: `src-tauri/migrations/0002_fit_to_page.sql`
+- Modify: `src-tauri/src/db/models.rs`
+- Modify: `src-tauri/src/db/folders.rs`
+- Modify: `src-tauri/src/db/jobs.rs`
+- Modify: `src-tauri/src/print/mod.rs`
+- Modify: `src-tauri/src/print/layout.rs`
+- Modify: `src-tauri/src/print/macos_cups.rs`
+- Modify: `src-tauri/src/print/fake.rs`
+
+**Interfaces:**
+- Consumes: `db::models::{WatchFolder, PrintJob}`; `db::folders::{NewFolder, clamp, create_folder, update_folder}`; `db::jobs::{NewJob, enqueue_job}`; `print::PrintRequest`; `print::layout::fit_centered(src_w: i32, src_h: i32, area_w: i32, area_h: i32) -> FitRect`; `print::macos_cups::lp_args(req: &PrintRequest) -> Vec<String>`; `print::fake::FakeBackend`.
+- Produces: `WatchFolder.fit_to_page: i64`; `PrintJob.fit_to_page: i64`; `NewFolder.fit_to_page: bool`; `NewJob.fit_to_page: bool`; `PrintRequest.fit_to_page: bool`; `print::layout::fit_centered(src_w: i32, src_h: i32, area_w: i32, area_h: i32, allow_upscale: bool) -> FitRect`; `create_folder`, `update_folder`, `enqueue_job`, `lp_args` keep their existing signatures but now read/write the new field/column.
+
+`clamp` in `db/folders.rs` is unchanged — a `bool` has no invalid range to clamp, so `fit_to_page` is bound directly from `n.fit_to_page as i64` rather than threaded through `clamp`'s tuple.
+
+- [ ] **Step 1: Write the failing tests**
+
+Modify `src-tauri/src/print/layout.rs`: replace the `#[cfg(test)] mod tests` block with:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_wider_than_area_is_letterboxed_vertically() {
+        // 200x100 source into a 400x400 area -> scaled to 400x200, centered.
+        let r = fit_centered(200, 100, 400, 400, true);
+        assert_eq!((r.width, r.height), (400, 200));
+        assert_eq!((r.x, r.y), (0, 100));
+    }
+
+    #[test]
+    fn image_taller_than_area_is_pillarboxed_horizontally() {
+        let r = fit_centered(100, 200, 400, 400, true);
+        assert_eq!((r.width, r.height), (200, 400));
+        assert_eq!((r.x, r.y), (100, 0));
+    }
+
+    #[test]
+    fn exact_aspect_match_fills_the_area() {
+        let r = fit_centered(210, 297, 2100, 2970, true);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 0, 2100, 2970));
+    }
+
+    #[test]
+    fn degenerate_sizes_do_not_panic_or_divide_by_zero() {
+        let r = fit_centered(0, 0, 400, 400, true);
+        assert_eq!((r.width, r.height), (0, 0));
+    }
+
+    #[test]
+    fn render_dpi_is_capped_to_bound_memory() {
+        assert_eq!(render_dpi(600), MAX_RENDER_DPI);
+        assert_eq!(render_dpi(200), 200);
+        assert_eq!(render_dpi(0), MIN_RENDER_DPI);
+    }
+
+    #[test]
+    fn source_larger_than_area_is_scaled_down() {
+        // 2000x1000 source into a 400x400 area
+        // scale = min(400/2000, 400/1000) = min(0.2, 0.4) = 0.2
+        // width = round(2000 * 0.2) = 400
+        // height = round(1000 * 0.2) = 200
+        // x = (400 - 400) / 2 = 0
+        // y = (400 - 200) / 2 = 100
+        let r = fit_centered(2000, 1000, 400, 400, true);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 100, 400, 200));
+        assert!(r.width <= 400);
+        assert!(r.height <= 400);
+    }
+
+    #[test]
+    fn mixed_ratio_downscales_by_the_limiting_dimension() {
+        // 800x100 source into a 400x400 area
+        // scale = min(400/800, 400/100) = min(0.5, 4.0) = 0.5
+        // width = round(800 * 0.5) = 400
+        // height = round(100 * 0.5) = 50
+        // x = (400 - 400) / 2 = 0
+        // y = (400 - 50) / 2 = 175
+        let r = fit_centered(800, 100, 400, 400, true);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 175, 400, 50));
+        assert!(r.width <= 400);
+        assert!(r.height <= 400);
+    }
+
+    #[test]
+    fn non_positive_area_yields_a_zero_rect() {
+        // Zero width area
+        let r = fit_centered(1000, 1000, 0, 400, true);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 0, 0, 0));
+
+        // Zero height area
+        let r = fit_centered(1000, 1000, 400, 0, true);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 0, 0, 0));
+
+        // Negative area dimension
+        let r = fit_centered(1000, 1000, -100, 400, true);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn undersized_source_without_upscale_keeps_natural_size_centered() {
+        // 100x50 source into a 400x400 area, allow_upscale = false.
+        // scale = min(400/100, 400/50, 1.0) = min(4.0, 8.0, 1.0) = 1.0
+        // width = round(100 * 1.0) = 100, height = round(50 * 1.0) = 50
+        // x = (400 - 100) / 2 = 150, y = (400 - 50) / 2 = 175
+        let r = fit_centered(100, 50, 400, 400, false);
+        assert_eq!((r.x, r.y, r.width, r.height), (150, 175, 100, 50));
+    }
+
+    #[test]
+    fn undersized_source_with_upscale_scales_up_to_fill() {
+        // Same source and area, allow_upscale = true (existing behaviour).
+        // scale = min(400/100, 400/50) = min(4.0, 8.0) = 4.0
+        // width = round(100 * 4.0) = 400, height = round(50 * 4.0) = 200
+        // x = (400 - 400) / 2 = 0, y = (400 - 200) / 2 = 100
+        let r = fit_centered(100, 50, 400, 400, true);
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 100, 400, 200));
+    }
+
+    #[test]
+    fn oversized_source_shrinks_identically_regardless_of_upscale_flag() {
+        // 2000x1000 source into a 400x400 area, both modes. This is the
+        // load-bearing case from the spec: "off" must never enlarge, but
+        // oversized content is still shrunk to fit in both modes.
+        // scale = min(400/2000, 400/1000) = min(0.2, 0.4) = 0.2, already
+        // <= 1.0, so allow_upscale changes nothing here.
+        // width = round(2000 * 0.2) = 400, height = round(1000 * 0.2) = 200
+        // x = (400 - 400) / 2 = 0, y = (400 - 200) / 2 = 100
+        let with_upscale = fit_centered(2000, 1000, 400, 400, true);
+        let without_upscale = fit_centered(2000, 1000, 400, 400, false);
+        assert_eq!(with_upscale, without_upscale);
+        assert_eq!(
+            (without_upscale.x, without_upscale.y, without_upscale.width, without_upscale.height),
+            (0, 100, 400, 200)
+        );
+    }
+}
+```
+
+Modify `src-tauri/src/print/macos_cups.rs`: replace the `#[cfg(test)] mod tests` block with:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::print::{ColorMode, DuplexMode, PrintRequest};
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_lpstat_output_and_marks_the_default() {
+        let out = "printer Brother_MFC is idle.  enabled since Mon\n\
+                   printer HP_LaserJet is idle.  enabled since Mon\n\
+                   system default destination: HP_LaserJet\n";
+        let list = parse_lpstat(out);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "Brother_MFC");
+        assert!(!list[0].is_default);
+        assert!(list[1].is_default);
+    }
+
+    #[test]
+    fn returns_no_printers_for_empty_output() {
+        assert!(parse_lpstat("").is_empty());
+    }
+
+    #[test]
+    fn builds_lp_arguments_for_duplex_mono() {
+        // fit_to_page = false: no CUPS fit-to-page flag is emitted.
+        let req = PrintRequest {
+            file: PathBuf::from("/tmp/a.pdf"),
+            printer: "HP".into(),
+            copies: 3,
+            duplex: DuplexMode::LongEdge,
+            color: ColorMode::Mono,
+            fit_to_page: false,
+        };
+        assert_eq!(
+            lp_args(&req),
+            vec![
+                "-d", "HP",
+                "-n", "3",
+                "-o", "sides=two-sided-long-edge",
+                "-o", "ColorModel=Gray",
+                "/tmp/a.pdf",
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_lp_arguments_for_simplex_color() {
+        // fit_to_page = false: no CUPS fit-to-page flag is emitted.
+        let req = PrintRequest {
+            file: PathBuf::from("/tmp/b.png"),
+            printer: "P".into(),
+            copies: 1,
+            duplex: DuplexMode::Simplex,
+            color: ColorMode::Color,
+            fit_to_page: false,
+        };
+        assert_eq!(
+            lp_args(&req),
+            vec![
+                "-d", "P",
+                "-n", "1",
+                "-o", "sides=one-sided",
+                "-o", "ColorModel=RGB",
+                "/tmp/b.png",
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_lp_arguments_with_fit_to_page_appends_the_cups_flag() {
+        // fit_to_page = true: CUPS' own scale-to-fill option is appended
+        // after the duplex/color options and before the file path.
+        let req = PrintRequest {
+            file: PathBuf::from("/tmp/a.pdf"),
+            printer: "HP".into(),
+            copies: 1,
+            duplex: DuplexMode::Simplex,
+            color: ColorMode::Mono,
+            fit_to_page: true,
+        };
+        assert_eq!(
+            lp_args(&req),
+            vec![
+                "-d", "HP",
+                "-n", "1",
+                "-o", "sides=one-sided",
+                "-o", "ColorModel=Gray",
+                "-o", "fit-to-page",
+                "/tmp/a.pdf",
+            ]
+        );
+    }
+
+    #[test]
+    fn classifies_missing_destination_as_printer_error() {
+        let stderr = "lp: Error - The printer or class does not exist.";
+        assert_eq!(classify_stderr(stderr), PrintErrorKind::Printer);
+    }
+
+    #[test]
+    fn classifies_not_accepting_as_printer_error() {
+        let stderr = "lp: Error - Destination \"HP\" is not accepting jobs.";
+        assert_eq!(classify_stderr(stderr), PrintErrorKind::Printer);
+    }
+
+    #[test]
+    fn classifies_unrelated_failure_as_file_error() {
+        let stderr = "lp: Error - Unable to open file: No such file or directory";
+        assert_eq!(classify_stderr(stderr), PrintErrorKind::File);
+    }
+}
+```
+
+Modify `src-tauri/src/print/fake.rs`: replace the `req()` helper inside `#[cfg(test)] mod tests` with (only the fixture changes — no new assertions, this is a mechanical fix so the file keeps compiling once `PrintRequest` gains the field):
+
+```rust
+    fn req() -> PrintRequest {
+        PrintRequest {
+            file: PathBuf::from("/tmp/a.pdf"),
+            printer: "P".into(),
+            copies: 2,
+            duplex: DuplexMode::LongEdge,
+            color: ColorMode::Mono,
+            fit_to_page: true,
+        }
+    }
+```
+
+Modify `src-tauri/src/db/folders.rs`: replace the `#[cfg(test)] mod tests` block with:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect;
+
+    fn sample() -> NewFolder {
+        NewFolder {
+            name: "Scans".into(),
+            path: "/tmp/printy-scans".into(),
+            poll_interval_secs: 5,
+            file_types: vec!["pdf".into()],
+            printer_name: "Brother".into(),
+            copies: 1,
+            duplex: "simplex".into(),
+            color_mode: "mono".into(),
+            post_action: "move".into(),
+            fit_to_page: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_and_list_round_trip() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+        assert_eq!(f.name, "Scans");
+        assert_eq!(f.enabled, 1);
+        assert_eq!(f.types(), vec!["pdf".to_string()]);
+        assert_eq!(list_folders(&db).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_path_is_rejected() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        create_folder(&db, &sample()).await.unwrap();
+        assert!(create_folder(&db, &sample()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn interval_below_floor_is_clamped() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let mut n = sample();
+        n.poll_interval_secs = 0;
+        let f = create_folder(&db, &n).await.unwrap();
+        assert_eq!(f.poll_interval_secs, MIN_POLL_INTERVAL_SECS);
+    }
+
+    #[tokio::test]
+    async fn update_enabled_and_status() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+        set_folder_enabled(&db, f.id, false).await.unwrap();
+        set_folder_status(&db, f.id, "path_missing").await.unwrap();
+        let got = get_folder(&db, f.id).await.unwrap().unwrap();
+        assert_eq!(got.enabled, 0);
+        assert_eq!(got.status, "path_missing");
+    }
+
+    #[tokio::test]
+    async fn delete_removes_folder() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+        delete_folder(&db, f.id).await.unwrap();
+        assert!(get_folder(&db, f.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn update_folder_changes_every_field() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+        let original_id = f.id;
+
+        let updated = NewFolder {
+            name: "Invoices".into(),
+            path: "/tmp/printy-invoices".into(),
+            poll_interval_secs: 10,
+            file_types: vec!["tiff".into(), "jpg".into()],
+            printer_name: "Xerox".into(),
+            copies: 3,
+            duplex: "duplex".into(),
+            color_mode: "color".into(),
+            post_action: "delete".into(),
+            fit_to_page: false,
+        };
+
+        let f = update_folder(&db, f.id, &updated).await.unwrap();
+
+        assert_eq!(f.id, original_id);
+        assert_eq!(f.name, "Invoices");
+        assert_eq!(f.path, "/tmp/printy-invoices");
+        assert_eq!(f.poll_interval_secs, 10);
+        assert_eq!(f.types(), vec!["tiff".to_string(), "jpg".to_string()]);
+        assert_eq!(f.printer_name, "Xerox");
+        assert_eq!(f.copies, 3);
+        assert_eq!(f.duplex, "duplex");
+        assert_eq!(f.color_mode, "color");
+        assert_eq!(f.post_action, "delete");
+        assert_eq!(f.fit_to_page, 0);
+        assert!(!f.updated_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fit_to_page_defaults_to_true_and_persists_through_an_update() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+        assert_eq!(f.fit_to_page, 1);
+
+        let mut off = sample();
+        off.fit_to_page = false;
+        let updated = update_folder(&db, f.id, &off).await.unwrap();
+        assert_eq!(updated.fit_to_page, 0);
+
+        let refetched = get_folder(&db, f.id).await.unwrap().unwrap();
+        assert_eq!(refetched.fit_to_page, 0);
+    }
+}
+```
+
+Modify `src-tauri/src/db/jobs.rs`: replace the `#[cfg(test)] mod tests` block with:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect;
+    use crate::db::folders::{create_folder, NewFolder};
+
+    async fn setup() -> (crate::db::Db, i64) {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &NewFolder {
+            name: "F".into(), path: "/tmp/f".into(), poll_interval_secs: 5,
+            file_types: vec!["pdf".into()], printer_name: "P".into(), copies: 1,
+            duplex: "simplex".into(), color_mode: "mono".into(), post_action: "move".into(),
+            fit_to_page: true,
+        }).await.unwrap();
+        (db, f.id)
+    }
+
+    fn job(folder_id: i64, name: &str, hash: &str) -> NewJob {
+        NewJob {
+            folder_id,
+            file_path: format!("/tmp/f/{name}"),
+            file_name: name.into(),
+            size_bytes: 100,
+            mtime_ms: 1_700_000_000_000,
+            sha256: hash.into(),
+            printer_name: "P".into(),
+            copies: 1,
+            duplex: "simplex".into(),
+            color_mode: "mono".into(),
+            fit_to_page: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_then_pick_up_in_fifo_order() {
+        let (db, fid) = setup().await;
+        enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        enqueue_job(&db, &job(fid, "b.pdf", "h2")).await.unwrap();
+        let first = next_due_job(&db, 0).await.unwrap().unwrap();
+        assert_eq!(first.file_name, "a.pdf");
+        assert_eq!(first.state, JobState::Queued.as_str());
+    }
+
+    #[tokio::test]
+    async fn retrying_job_is_hidden_until_its_backoff_elapses() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_printing(&db, j.id).await.unwrap();
+        mark_retrying(&db, j.id, "file", "kaputt", 5_000).await.unwrap();
+        assert!(next_due_job(&db, 4_999).await.unwrap().is_none());
+        let due = next_due_job(&db, 5_000).await.unwrap().unwrap();
+        assert_eq!(due.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn requeue_does_not_consume_an_attempt() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_printing(&db, j.id).await.unwrap();
+        requeue_job(&db, j.id).await.unwrap();
+        let back = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(back.attempts, 0);
+        assert_eq!(back.state, JobState::Queued.as_str());
+    }
+
+    #[tokio::test]
+    async fn interrupted_printing_job_is_failed_never_retried() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_printing(&db, j.id).await.unwrap();
+        assert_eq!(recover_interrupted(&db).await.unwrap(), 1);
+        let back = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(back.state, JobState::Failed.as_str());
+        assert_eq!(back.error_kind.as_deref(), Some("interrupted"));
+        assert!(next_due_job(&db, 0).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dedup_lookups_only_match_completed_jobs() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        assert!(!job_done_for_hash(&db, fid, "h1").await.unwrap());
+        mark_printing(&db, j.id).await.unwrap();
+        mark_done(&db, j.id).await.unwrap();
+        assert!(job_done_for_hash(&db, fid, "h1").await.unwrap());
+        assert!(job_seen_for_stamp(&db, fid, "a.pdf", 100, 1_700_000_000_000).await.unwrap());
+        assert!(!job_seen_for_stamp(&db, fid, "a.pdf", 101, 1_700_000_000_000).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_job_records_kind_and_message() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_failed(&db, j.id, "file", "PDF nicht lesbar").await.unwrap();
+        let back = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(back.state, JobState::Failed.as_str());
+        assert_eq!(back.error_message.as_deref(), Some("PDF nicht lesbar"));
+        assert!(back.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn mark_done_clears_stale_error_fields() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_printing(&db, j.id).await.unwrap();
+        // Set error fields via mark_retrying
+        mark_retrying(&db, j.id, "file", "kaputt", 10_000).await.unwrap();
+        let with_errors = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(with_errors.error_kind.as_deref(), Some("file"));
+        assert_eq!(with_errors.error_message.as_deref(), Some("kaputt"));
+        assert_eq!(with_errors.next_attempt_at, Some(10_000));
+        // Resume printing and mark done
+        mark_printing(&db, j.id).await.unwrap();
+        mark_done(&db, j.id).await.unwrap();
+        let cleaned = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(cleaned.state, JobState::Done.as_str());
+        assert_eq!(cleaned.error_kind.as_deref(), None);
+        assert_eq!(cleaned.error_message.as_deref(), None);
+        assert_eq!(cleaned.next_attempt_at, None);
+        assert!(cleaned.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn mark_printing_sets_started_at() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        let queued = get_job(&db, j.id).await.unwrap().unwrap();
+        assert!(queued.started_at.is_none());
+        mark_printing(&db, j.id).await.unwrap();
+        let printing = get_job(&db, j.id).await.unwrap().unwrap();
+        assert!(printing.started_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn requeue_clears_a_previously_set_next_attempt_at() {
+        let (db, fid) = setup().await;
+        let j = enqueue_job(&db, &job(fid, "a.pdf", "h1")).await.unwrap();
+        mark_printing(&db, j.id).await.unwrap();
+        // Set a far-future next_attempt_at via mark_retrying
+        mark_retrying(&db, j.id, "file", "kaputt", 1_000_000).await.unwrap();
+        let retrying = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(retrying.attempts, 1);
+        assert_eq!(retrying.next_attempt_at, Some(1_000_000));
+        // Resume printing and requeue
+        mark_printing(&db, j.id).await.unwrap();
+        requeue_job(&db, j.id).await.unwrap();
+        let requeued = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(requeued.state, JobState::Queued.as_str());
+        assert_eq!(requeued.attempts, 1);  // attempt still consumed
+        assert_eq!(requeued.next_attempt_at, None);  // but backoff cleared
+        assert_eq!(requeued.started_at, None);
+        // Job must be visible to next_due_job at a time well before the far-future timestamp
+        let due = next_due_job(&db, 0).await.unwrap().unwrap();
+        assert_eq!(due.id, j.id);
+        assert_eq!(due.file_name, "a.pdf");
+    }
+
+    #[tokio::test]
+    async fn recover_interrupted_touches_only_printing_jobs() {
+        let (db, fid) = setup().await;
+        // Create four jobs in different states
+        let queued = enqueue_job(&db, &job(fid, "q.pdf", "h_queued")).await.unwrap();
+        let printing_one = enqueue_job(&db, &job(fid, "p.pdf", "h_printing")).await.unwrap();
+        mark_printing(&db, printing_one.id).await.unwrap();
+        let retrying_one = enqueue_job(&db, &job(fid, "r.pdf", "h_retrying")).await.unwrap();
+        mark_printing(&db, retrying_one.id).await.unwrap();
+        mark_retrying(&db, retrying_one.id, "file", "kaputt", 10_000).await.unwrap();
+        let done_one = enqueue_job(&db, &job(fid, "d.pdf", "h_done")).await.unwrap();
+        mark_printing(&db, done_one.id).await.unwrap();
+        mark_done(&db, done_one.id).await.unwrap();
+
+        // Call recover_interrupted
+        let affected = recover_interrupted(&db).await.unwrap();
+        assert_eq!(affected, 1);  // Only the printing job should be affected
+
+        // Verify the printing job is now failed with the right error
+        let recovered = get_job(&db, printing_one.id).await.unwrap().unwrap();
+        assert_eq!(recovered.state, JobState::Failed.as_str());
+        assert_eq!(recovered.error_kind.as_deref(), Some("interrupted"));
+
+        // Verify the other three are unchanged
+        let still_queued = get_job(&db, queued.id).await.unwrap().unwrap();
+        assert_eq!(still_queued.state, JobState::Queued.as_str());
+        let still_retrying = get_job(&db, retrying_one.id).await.unwrap().unwrap();
+        assert_eq!(still_retrying.state, JobState::Retrying.as_str());
+        let still_done = get_job(&db, done_one.id).await.unwrap().unwrap();
+        assert_eq!(still_done.state, JobState::Done.as_str());
+    }
+
+    #[tokio::test]
+    async fn enqueue_job_snapshots_fit_to_page_onto_the_job() {
+        let (db, fid) = setup().await;
+
+        let mut off = job(fid, "a.pdf", "h1");
+        off.fit_to_page = false;
+        let j = enqueue_job(&db, &off).await.unwrap();
+        assert_eq!(j.fit_to_page, 0);
+
+        // A second job enqueued with the opposite flag proves the value is
+        // carried per-call from the `NewJob` the caller builds, not read back
+        // from live folder state — this is the snapshot semantics the spec
+        // requires: changing a folder's fit_to_page must never alter jobs
+        // already queued (the folder -> job copy itself happens in the
+        // not-yet-built queue/intake layer; this test covers the db layer's
+        // half of that contract, which is what `enqueue_job` owns).
+        let mut on = job(fid, "b.pdf", "h2");
+        on.fit_to_page = true;
+        let j2 = enqueue_job(&db, &on).await.unwrap();
+        assert_eq!(j2.fit_to_page, 1);
+
+        // The first job's row is untouched by the second enqueue.
+        let refetched = get_job(&db, j.id).await.unwrap().unwrap();
+        assert_eq!(refetched.fit_to_page, 0);
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd src-tauri && cargo test`
+Expected: FAIL to compile. Representative errors:
+- `error[E0560]: struct \`db::folders::NewFolder\` has no field named \`fit_to_page\`` (from `db/folders.rs`'s `sample()` and the `updated` literal in `update_folder_changes_every_field`)
+- `error[E0560]: struct \`db::jobs::NewJob\` has no field named \`fit_to_page\`` (from `db/jobs.rs`'s `job()` helper)
+- `error[E0560]: struct \`print::PrintRequest\` has no field named \`fit_to_page\`` (from `print/macos_cups.rs` and `print/fake.rs`)
+- `error[E0061]: this function takes 4 arguments but 5 arguments were supplied` (from every `fit_centered(..., true)` / `fit_centered(..., false)` call in `print/layout.rs`)
+
+- [ ] **Step 3: Write the migration**
+
+Create `src-tauri/migrations/0002_fit_to_page.sql`:
+
+```sql
+-- Per-folder fit mode (spec: "Amended after review (2026-08-12): per-folder
+-- fit mode"). fit_to_page = 1 (default) scales content to fill the printable
+-- area, upscaling if necessary. fit_to_page = 0 prints at natural size,
+-- never enlarging -- but oversized content is still shrunk to fit either
+-- way. The column is added to both tables because the flag is snapshotted
+-- onto the job at enqueue time, like printer_name and copies, so editing a
+-- folder never changes jobs already queued.
+ALTER TABLE watch_folder ADD COLUMN fit_to_page INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE print_job    ADD COLUMN fit_to_page INTEGER NOT NULL DEFAULT 1;
+```
+
+- [ ] **Step 4: Update the row structs**
+
+Modify `src-tauri/src/db/models.rs` to:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct WatchFolder {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub enabled: i64,
+    pub poll_interval_secs: i64,
+    pub file_types: String,
+    pub printer_name: String,
+    pub copies: i64,
+    pub duplex: String,
+    pub color_mode: String,
+    pub post_action: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub fit_to_page: i64,
+}
+
+impl WatchFolder {
+    /// `file_types` is stored as a JSON array of lowercase extensions.
+    pub fn types(&self) -> Vec<String> {
+        serde_json::from_str(&self.file_types).unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PrintJob {
+    pub id: i64,
+    pub folder_id: i64,
+    pub file_path: String,
+    pub file_name: String,
+    pub size_bytes: i64,
+    pub mtime_ms: i64,
+    pub sha256: String,
+    pub state: String,
+    pub attempts: i64,
+    pub printer_name: String,
+    pub copies: i64,
+    pub duplex: String,
+    pub color_mode: String,
+    pub error_kind: Option<String>,
+    pub error_message: Option<String>,
+    pub next_attempt_at: Option<i64>,
+    pub enqueued_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub fit_to_page: i64,
+}
+```
+
+(`#[derive(sqlx::FromRow)]` maps struct fields to `SELECT *` columns by name,
+not position, so appending the field at the end is safe regardless of where
+`ALTER TABLE` physically placed the column.)
+
+- [ ] **Step 5: Update the folder CRUD implementation**
+
+Modify `src-tauri/src/db/folders.rs`'s non-test section (everything above
+`#[cfg(test)]`) to:
+
+```rust
+use crate::db::models::WatchFolder;
+use crate::db::Db;
+use serde::Deserialize;
+
+pub const MIN_POLL_INTERVAL_SECS: i64 = 1;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewFolder {
+    pub name: String,
+    pub path: String,
+    pub poll_interval_secs: i64,
+    pub file_types: Vec<String>,
+    pub printer_name: String,
+    pub copies: i64,
+    pub duplex: String,
+    pub color_mode: String,
+    pub post_action: String,
+    pub fit_to_page: bool,
+}
+
+fn clamp(n: &NewFolder) -> (i64, i64, String) {
+    let interval = n.poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
+    let copies = n.copies.max(1);
+    let types = serde_json::to_string(&n.file_types).unwrap_or_else(|_| "[]".into());
+    (interval, copies, types)
+}
+
+pub async fn create_folder(db: &Db, n: &NewFolder) -> Result<WatchFolder, sqlx::Error> {
+    let (interval, copies, types) = clamp(n);
+    sqlx::query_as::<_, WatchFolder>(
+        "INSERT INTO watch_folder
+           (name, path, poll_interval_secs, file_types, printer_name,
+            copies, duplex, color_mode, post_action, fit_to_page)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+    )
+    .bind(&n.name).bind(&n.path).bind(interval).bind(types).bind(&n.printer_name)
+    .bind(copies).bind(&n.duplex).bind(&n.color_mode).bind(&n.post_action)
+    .bind(n.fit_to_page as i64)
+    .fetch_one(db)
+    .await
+}
+
+pub async fn list_folders(db: &Db) -> Result<Vec<WatchFolder>, sqlx::Error> {
+    sqlx::query_as::<_, WatchFolder>("SELECT * FROM watch_folder ORDER BY id")
+        .fetch_all(db)
+        .await
+}
+
+pub async fn get_folder(db: &Db, id: i64) -> Result<Option<WatchFolder>, sqlx::Error> {
+    sqlx::query_as::<_, WatchFolder>("SELECT * FROM watch_folder WHERE id = ?")
+        .bind(id)
+        .fetch_optional(db)
+        .await
+}
+
+pub async fn update_folder(db: &Db, id: i64, n: &NewFolder) -> Result<WatchFolder, sqlx::Error> {
+    let (interval, copies, types) = clamp(n);
+    sqlx::query_as::<_, WatchFolder>(
+        "UPDATE watch_folder SET
+           name = ?, path = ?, poll_interval_secs = ?, file_types = ?,
+           printer_name = ?, copies = ?, duplex = ?, color_mode = ?,
+           post_action = ?, fit_to_page = ?, updated_at = datetime('now')
+         WHERE id = ? RETURNING *",
+    )
+    .bind(&n.name).bind(&n.path).bind(interval).bind(types).bind(&n.printer_name)
+    .bind(copies).bind(&n.duplex).bind(&n.color_mode).bind(&n.post_action)
+    .bind(n.fit_to_page as i64).bind(id)
+    .fetch_one(db)
+    .await
+}
+
+pub async fn delete_folder(db: &Db, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM watch_folder WHERE id = ?")
+        .bind(id).execute(db).await?;
+    Ok(())
+}
+
+pub async fn set_folder_enabled(db: &Db, id: i64, enabled: bool) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE watch_folder SET enabled = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(enabled as i64).bind(id).execute(db).await?;
+    Ok(())
+}
+
+pub async fn set_folder_status(db: &Db, id: i64, status: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE watch_folder SET status = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(status).bind(id).execute(db).await?;
+    Ok(())
+}
+```
+
+- [ ] **Step 6: Update the job ledger implementation**
+
+Modify `src-tauri/src/db/jobs.rs`'s non-test section (everything above
+`#[cfg(test)]`) to:
+
+```rust
+use crate::db::models::PrintJob;
+use crate::db::Db;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobState {
+    Queued,
+    Printing,
+    Retrying,
+    Done,
+    Failed,
+}
+
+impl JobState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobState::Queued => "queued",
+            JobState::Printing => "printing",
+            JobState::Retrying => "retrying",
+            JobState::Done => "done",
+            JobState::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NewJob {
+    pub folder_id: i64,
+    pub file_path: String,
+    pub file_name: String,
+    pub size_bytes: i64,
+    pub mtime_ms: i64,
+    pub sha256: String,
+    pub printer_name: String,
+    pub copies: i64,
+    pub duplex: String,
+    pub color_mode: String,
+    pub fit_to_page: bool,
+}
+
+pub async fn enqueue_job(db: &Db, n: &NewJob) -> Result<PrintJob, sqlx::Error> {
+    sqlx::query_as::<_, PrintJob>(
+        "INSERT INTO print_job
+           (folder_id, file_path, file_name, size_bytes, mtime_ms, sha256,
+            state, printer_name, copies, duplex, color_mode, fit_to_page)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?) RETURNING *",
+    )
+    .bind(n.folder_id).bind(&n.file_path).bind(&n.file_name).bind(n.size_bytes)
+    .bind(n.mtime_ms).bind(&n.sha256).bind(&n.printer_name).bind(n.copies)
+    .bind(&n.duplex).bind(&n.color_mode).bind(n.fit_to_page as i64)
+    .fetch_one(db)
+    .await
+}
+
+/// FIFO by enqueue time. `now_ms` gates jobs waiting out their retry backoff.
+pub async fn next_due_job(db: &Db, now_ms: i64) -> Result<Option<PrintJob>, sqlx::Error> {
+    sqlx::query_as::<_, PrintJob>(
+        "SELECT * FROM print_job
+         WHERE state IN ('queued', 'retrying')
+           AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+         ORDER BY enqueued_at, id LIMIT 1",
+    )
+    .bind(now_ms)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn get_job(db: &Db, id: i64) -> Result<Option<PrintJob>, sqlx::Error> {
+    sqlx::query_as::<_, PrintJob>("SELECT * FROM print_job WHERE id = ?")
+        .bind(id).fetch_optional(db).await
+}
+
+pub async fn mark_printing(db: &Db, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE print_job SET state = 'printing', started_at = datetime('now') WHERE id = ?",
+    ).bind(id).execute(db).await?;
+    Ok(())
+}
+
+pub async fn mark_done(db: &Db, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE print_job SET state = 'done', finished_at = datetime('now'),
+           error_kind = NULL, error_message = NULL, next_attempt_at = NULL
+         WHERE id = ?",
+    ).bind(id).execute(db).await?;
+    Ok(())
+}
+
+/// File-level failure that will be retried. Consumes one attempt.
+pub async fn mark_retrying(
+    db: &Db, id: i64, kind: &str, message: &str, next_attempt_at: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE print_job SET state = 'retrying', attempts = attempts + 1,
+           error_kind = ?, error_message = ?, next_attempt_at = ? WHERE id = ?",
+    ).bind(kind).bind(message).bind(next_attempt_at).bind(id).execute(db).await?;
+    Ok(())
+}
+
+pub async fn mark_failed(
+    db: &Db, id: i64, kind: &str, message: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE print_job SET state = 'failed', finished_at = datetime('now'),
+           error_kind = ?, error_message = ?, next_attempt_at = NULL WHERE id = ?",
+    ).bind(kind).bind(message).bind(id).execute(db).await?;
+    Ok(())
+}
+
+/// Printer-level failure: the job goes back to the queue untouched. No attempt
+/// is consumed — a switched-off printer must not burn a job's retries.
+pub async fn requeue_job(db: &Db, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE print_job SET state = 'queued', started_at = NULL,
+           next_attempt_at = NULL WHERE id = ?",
+    ).bind(id).execute(db).await?;
+    Ok(())
+}
+
+/// Called once at startup. A job left in 'printing' means the app died mid-job;
+/// it is failed, never silently reprinted.
+pub async fn recover_interrupted(db: &Db) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE print_job SET state = 'failed', error_kind = 'interrupted',
+           error_message = 'Beim Druck unterbrochen', finished_at = datetime('now')
+         WHERE state = 'printing'",
+    ).execute(db).await?;
+    Ok(r.rows_affected())
+}
+
+pub async fn job_done_for_hash(db: &Db, folder_id: i64, sha256: &str) -> Result<bool, sqlx::Error> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM print_job WHERE folder_id = ? AND sha256 = ? AND state = 'done'",
+    ).bind(folder_id).bind(sha256).fetch_one(db).await?;
+    Ok(n > 0)
+}
+
+/// Cheap pre-check so the watcher does not hash every file on every tick.
+pub async fn job_seen_for_stamp(
+    db: &Db, folder_id: i64, file_name: &str, size_bytes: i64, mtime_ms: i64,
+) -> Result<bool, sqlx::Error> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM print_job
+         WHERE folder_id = ? AND file_name = ? AND size_bytes = ? AND mtime_ms = ?",
+    ).bind(folder_id).bind(file_name).bind(size_bytes).bind(mtime_ms)
+     .fetch_one(db).await?;
+    Ok(n > 0)
+}
+
+pub async fn list_jobs(
+    db: &Db, only_failed: bool, limit: i64,
+) -> Result<Vec<PrintJob>, sqlx::Error> {
+    let sql = if only_failed {
+        "SELECT * FROM print_job WHERE state = 'failed' ORDER BY id DESC LIMIT ?"
+    } else {
+        "SELECT * FROM print_job ORDER BY id DESC LIMIT ?"
+    };
+    sqlx::query_as::<_, PrintJob>(sql).bind(limit).fetch_all(db).await
+}
+```
+
+- [ ] **Step 7: Update `PrintRequest`**
+
+Modify `src-tauri/src/print/mod.rs` to:
+
+```rust
+pub mod fake;
+#[cfg(target_os = "macos")]
+pub mod macos_cups;
+pub mod layout;
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DuplexMode {
+    Simplex,
+    LongEdge,
+    ShortEdge,
+}
+
+impl DuplexMode {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "long_edge" => DuplexMode::LongEdge,
+            "short_edge" => DuplexMode::ShortEdge,
+            _ => DuplexMode::Simplex,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DuplexMode::Simplex => "simplex",
+            DuplexMode::LongEdge => "long_edge",
+            DuplexMode::ShortEdge => "short_edge",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorMode {
+    Color,
+    Mono,
+}
+
+impl ColorMode {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "color" => ColorMode::Color,
+            _ => ColorMode::Mono,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColorMode::Color => "color",
+            ColorMode::Mono => "mono",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrinterInfo {
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PrinterCapabilities {
+    pub duplex: bool,
+    pub color: bool,
+    pub copies: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrintRequest {
+    pub file: PathBuf,
+    pub printer: String,
+    pub copies: u32,
+    pub duplex: DuplexMode,
+    pub color: ColorMode,
+    /// Snapshotted from the folder's `fit_to_page` at enqueue time. `true`
+    /// scales content to fill the printable area, upscaling if necessary;
+    /// `false` prints at natural size but still shrinks oversized content.
+    /// Maps directly onto `print::layout::fit_centered`'s `allow_upscale`
+    /// parameter.
+    pub fit_to_page: bool,
+}
+
+/// Decides whether one job fails or the whole queue holds. See spec section 8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintErrorKind {
+    File,
+    Printer,
+    Config,
+}
+
+impl PrintErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrintErrorKind::File => "file",
+            PrintErrorKind::Printer => "printer",
+            PrintErrorKind::Config => "config",
+        }
+    }
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+pub struct PrintError {
+    pub kind: PrintErrorKind,
+    pub message: String,
+}
+
+impl PrintError {
+    pub fn file(msg: impl Into<String>) -> Self {
+        PrintError { kind: PrintErrorKind::File, message: msg.into() }
+    }
+    pub fn printer(msg: impl Into<String>) -> Self {
+        PrintError { kind: PrintErrorKind::Printer, message: msg.into() }
+    }
+    pub fn config(msg: impl Into<String>) -> Self {
+        PrintError { kind: PrintErrorKind::Config, message: msg.into() }
+    }
+}
+
+/// Implementations must be usable from `spawn_blocking`, so `Send + Sync`.
+/// They must not hold a `Pdfium` handle; bind it inside `print`.
+pub trait PrintBackend: Send + Sync {
+    fn list_printers(&self) -> Result<Vec<PrinterInfo>, PrintError>;
+    fn capabilities(&self, printer: &str) -> Result<PrinterCapabilities, PrintError>;
+    fn print(&self, req: &PrintRequest) -> Result<(), PrintError>;
+}
+```
+
+- [ ] **Step 8: Update `fit_centered`**
+
+Modify `src-tauri/src/print/layout.rs`'s non-test section (everything above
+`#[cfg(test)]`) to:
+
+```rust
+/// Rasterising above this DPI buys nothing and costs a lot of memory:
+/// an A4 page at 300 dpi is roughly 26 MB as 24-bit RGB.
+pub const MAX_RENDER_DPI: i32 = 300;
+pub const MIN_RENDER_DPI: i32 = 72;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FitRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// Scales `src` to fit inside `area` preserving aspect ratio, centered.
+/// `allow_upscale = false` additionally clamps the scale to 1.0, so content
+/// smaller than `area` keeps its natural size instead of being enlarged —
+/// but content larger than `area` is still shrunk in either mode, since
+/// printing it at natural size would push it off the page.
+pub fn fit_centered(
+    src_w: i32, src_h: i32, area_w: i32, area_h: i32, allow_upscale: bool,
+) -> FitRect {
+    if src_w <= 0 || src_h <= 0 || area_w <= 0 || area_h <= 0 {
+        return FitRect { x: 0, y: 0, width: 0, height: 0 };
+    }
+    let mut scale = f64::min(area_w as f64 / src_w as f64, area_h as f64 / src_h as f64);
+    if !allow_upscale {
+        scale = scale.min(1.0);
+    }
+    let width = (src_w as f64 * scale).round() as i32;
+    let height = (src_h as f64 * scale).round() as i32;
+    FitRect {
+        x: (area_w - width) / 2,
+        y: (area_h - height) / 2,
+        width,
+        height,
+    }
+}
+
+/// Clamps a printer's reported DPI into the range we are willing to rasterise.
+pub fn render_dpi(device_dpi: i32) -> i32 {
+    device_dpi.clamp(MIN_RENDER_DPI, MAX_RENDER_DPI)
+}
+```
+
+- [ ] **Step 9: Update `lp_args`**
+
+Modify `src-tauri/src/print/macos_cups.rs`'s `lp_args` function (leave
+`parse_lpstat`, `classify_stderr`, `CupsBackend` and its `impl PrintBackend`
+block unchanged) to:
+
+```rust
+/// Builds the argument vector for `lp`. Pure, so it is unit-testable.
+///
+/// `fit_to_page = true` appends CUPS' own `-o fit-to-page`, which scales
+/// content to fill the media, upscaling when necessary. There is no CUPS
+/// option for "shrink to fit but never enlarge", so `fit_to_page = false`
+/// emits nothing extra: a PDF then prints at its embedded page size (and is
+/// clipped, not shrunk, if oversized) while several CUPS image filters
+/// already downscale oversized images by default. This asymmetry between
+/// PDFs and images when the flag is off is a known limitation of this
+/// development-only backend; the Windows GDI backend (Task 8) does not share
+/// it, since it rasterises and places pixels itself via `fit_centered`.
+pub fn lp_args(req: &PrintRequest) -> Vec<String> {
+    let sides = match req.duplex {
+        DuplexMode::Simplex => "sides=one-sided",
+        DuplexMode::LongEdge => "sides=two-sided-long-edge",
+        DuplexMode::ShortEdge => "sides=two-sided-short-edge",
+    };
+    let color = match req.color {
+        ColorMode::Color => "ColorModel=RGB",
+        ColorMode::Mono => "ColorModel=Gray",
+    };
+    let mut args = vec![
+        "-d".to_string(), req.printer.clone(),
+        "-n".to_string(), req.copies.to_string(),
+        "-o".to_string(), sides.to_string(),
+        "-o".to_string(), color.to_string(),
+    ];
+    if req.fit_to_page {
+        args.push("-o".to_string());
+        args.push("fit-to-page".to_string());
+    }
+    args.push(req.file.to_string_lossy().to_string());
+    args
+}
+```
+
+- [ ] **Step 10: Run tests to verify they pass**
+
+Run: `cd src-tauri && cargo test`
+Expected: PASS — all tests green, including 6 new tests added in this task
+(3 in `print::layout`, 1 in `print::macos_cups`, 1 in `db::folders`, 1 in
+`db::jobs`).
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src-tauri/migrations/0002_fit_to_page.sql src-tauri/src/db src-tauri/src/print
+git commit -m "feat: add per-folder fit-to-page flag with shrink-only clamp for oversized content"
+```
