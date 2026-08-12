@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { FolderEvent, JobEvent, QueueEvent } from "./types";
+import type { FolderEvent, JobEvent, PausedEvent, QueueEvent } from "./types";
 
 export function onJobEvent(cb: (e: JobEvent) => void): Promise<UnlistenFn> {
   return listen<JobEvent>("printy://job", (e) => cb(e.payload));
@@ -11,4 +11,8 @@ export function onFolderEvent(cb: (e: FolderEvent) => void): Promise<UnlistenFn>
 
 export function onQueueEvent(cb: (e: QueueEvent) => void): Promise<UnlistenFn> {
   return listen<QueueEvent>("printy://queue", (e) => cb(e.payload));
+}
+
+export function onPausedEvent(cb: (e: PausedEvent) => void): Promise<UnlistenFn> {
+  return listen<PausedEvent>("printy://paused", (e) => cb(e.payload));
 }

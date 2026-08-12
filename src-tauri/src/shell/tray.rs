@@ -118,10 +118,14 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                         if now { "0" } else { "1" },
                     )
                     .await;
-                    let _ = handle.emit(
-                        "printy://queue",
-                        serde_json::json!({ "held": false, "paused": !now }),
-                    );
+                    // Its own topic, distinct from `printy://queue`: that one
+                    // means "the printer hold changed" and listeners key off
+                    // its `held` field. Reusing it here with a hardcoded
+                    // `held: false` would tell them the printer hold cleared
+                    // even when it is still engaged — the user's pause and
+                    // the printer hold are independent and must not be
+                    // conflated on the wire.
+                    let _ = handle.emit("printy://paused", serde_json::json!({ "paused": !now }));
                 });
             }
             "quit" => app.exit(0),

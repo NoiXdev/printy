@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
-import { onFolderEvent, onJobEvent, onQueueEvent } from "../lib/events";
+import { onFolderEvent, onJobEvent, onPausedEvent, onQueueEvent } from "../lib/events";
 import { folderActivity } from "../lib/format";
 import type { WatchFolder } from "../lib/types";
 import FolderCard from "../components/FolderCard";
@@ -61,6 +61,10 @@ export default function Folders(): JSX.Element {
         setHoldReason(e.held ? (e.reason ?? "Drucker nicht erreichbar") : null);
         invalidate();
       }),
+      // The user's pause toggle is its own event: it must refresh the
+      // "Alles pausieren" state promptly without touching queueHeld/
+      // holdReason, which only ever reflect the printer hold.
+      onPausedEvent(invalidate),
     ];
     return () => {
       for (const p of unlisteners) void p.then((un) => un());

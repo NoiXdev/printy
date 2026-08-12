@@ -116,3 +116,12 @@ export interface QueueEvent {
   held: boolean;
   reason?: string;
 }
+
+/**
+ * Payload of `printy://paused`. Deliberately separate from `QueueEvent`: the
+ * user's pause switch and the printer hold are independent states, and
+ * listeners that key off `held` must never see this event.
+ */
+export interface PausedEvent {
+  paused: boolean;
+}
