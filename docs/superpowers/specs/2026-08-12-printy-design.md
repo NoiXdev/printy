@@ -35,7 +35,24 @@ application can be built and operated on the author's machine.
 - Recursive watching. A folder's subdirectories are not scanned. This keeps the
   `printed/` and `failed/` exclusion trivial and avoids surprise print storms.
 - Office formats (DOCX, XLSX) and raw/ZPL spooling.
-- Paper tray selection, paper size and scaling controls.
+- Paper tray selection and paper size controls.
+
+### Amended after review (2026-08-12): per-folder fit mode
+
+Scaling is **not** out of scope. Each folder carries a `fit_to_page` flag:
+
+- **On (default):** content is scaled to fill the printable area, preserving
+  aspect ratio and centred. This is what people expect from "print this".
+- **Off:** content is printed at its natural size, centred. Labels, receipts and
+  small scans stay crisp instead of being blown up into a soft full-page image.
+
+**Content larger than the printable area is shrunk to fit in both modes.** "Off"
+means *never enlarge*, not *never scale* — printing an oversized page at natural
+size would push content off the paper, which is data loss, not fidelity.
+
+The flag is snapshotted onto the job at enqueue time, like the printer and copy
+settings, so changing a folder's configuration never retroactively alters jobs
+already waiting in the queue.
 - Multi-user or server operation. Printy is a single-user desktop application.
 
 ## 3. Stack
