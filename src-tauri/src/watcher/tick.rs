@@ -183,6 +183,115 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    /// Pre-seeds the tracker with the file's current stamp so this call's own
+    /// `tracker.observe` inside `tick_folder` immediately reports the file
+    /// stable, instead of the ordinary two-tick stability gate. That gate
+    /// resets on every successful enqueue (`tracker.forget`), so without this
+    /// a tick right after an enqueue would report `enqueued == 0` merely
+    /// because the file looks "new" again to the tracker -- never actually
+    /// reaching the `job_seen_for_stamp` dedup check this suite exists to pin.
+    async fn seeded_tick(
+        db: &crate::db::Db,
+        folder: &WatchFolder,
+        tracker: &mut StabilityTracker,
+        path: &std::path::Path,
+    ) -> TickReport {
+        let s = stamp(path).unwrap();
+        tracker.observe(path, s);
+        tick_folder(db, folder, tracker).await.unwrap()
+    }
+
+    /// At a 1-second poll interval, a job sitting in the queue while its file
+    /// is scanned again and again is the common case, not a rare race. A file
+    /// whose already-enqueued job is still `queued` must not be enqueued a
+    /// second time. This fails if `job_seen_for_stamp` (or the check against
+    /// it in `tick_folder`) is removed: the file would be reported as
+    /// stable-and-unseen on every seeded tick and get enqueued again.
+    #[tokio::test]
+    async fn a_file_whose_job_is_queued_is_not_enqueued_again() {
+        let d = temp("dup_queued");
+        let (db, fid) = setup(&d, "keep").await;
+        let folder = crate::db::folders::get_folder(&db, fid).await.unwrap().unwrap();
+        let path = d.join("a.pdf");
+        fs::write(&path, b"payload").unwrap();
+        let mut tracker = StabilityTracker::new();
+
+        let r1 = seeded_tick(&db, &folder, &mut tracker, &path).await;
+        assert_eq!(r1.enqueued, 1);
+        let jobs = list_jobs(&db, false, 10).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].state, "queued");
+
+        let r2 = seeded_tick(&db, &folder, &mut tracker, &path).await;
+        assert_eq!(
+            r2.enqueued, 0,
+            "a file whose job is already queued must not be enqueued again"
+        );
+        assert_eq!(list_jobs(&db, false, 10).await.unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// The file stays on disk for as long as a job for it is `printing` -- the
+    /// post-print action (move/delete) only runs once the print itself
+    /// finishes. At a 1-second interval, a scan landing squarely inside that
+    /// window is likely, not theoretical, so it must not enqueue a second job
+    /// for the same file.
+    #[tokio::test]
+    async fn a_file_whose_job_is_printing_is_not_enqueued_again() {
+        let d = temp("dup_printing");
+        let (db, fid) = setup(&d, "keep").await;
+        let folder = crate::db::folders::get_folder(&db, fid).await.unwrap().unwrap();
+        let path = d.join("a.pdf");
+        fs::write(&path, b"payload").unwrap();
+        let mut tracker = StabilityTracker::new();
+
+        let r1 = seeded_tick(&db, &folder, &mut tracker, &path).await;
+        assert_eq!(r1.enqueued, 1);
+        let jobs = list_jobs(&db, false, 10).await.unwrap();
+        crate::db::jobs::mark_printing(&db, jobs[0].id).await.unwrap();
+
+        let r2 = seeded_tick(&db, &folder, &mut tracker, &path).await;
+        assert_eq!(
+            r2.enqueued, 0,
+            "a file whose job is printing must not be enqueued again"
+        );
+        let after = list_jobs(&db, false, 10).await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].state, "printing");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A job that failed once and is waiting out its retry backoff is still a
+    /// job for this exact file -- re-enqueuing it would print it twice once
+    /// both the retry and the duplicate eventually fire.
+    #[tokio::test]
+    async fn a_file_whose_job_is_retrying_is_not_enqueued_again() {
+        let d = temp("dup_retrying");
+        let (db, fid) = setup(&d, "keep").await;
+        let folder = crate::db::folders::get_folder(&db, fid).await.unwrap().unwrap();
+        let path = d.join("a.pdf");
+        fs::write(&path, b"payload").unwrap();
+        let mut tracker = StabilityTracker::new();
+
+        let r1 = seeded_tick(&db, &folder, &mut tracker, &path).await;
+        assert_eq!(r1.enqueued, 1);
+        let jobs = list_jobs(&db, false, 10).await.unwrap();
+        crate::db::jobs::mark_printing(&db, jobs[0].id).await.unwrap();
+        crate::db::jobs::mark_retrying(&db, jobs[0].id, "file", "kaputt", i64::MAX)
+            .await
+            .unwrap();
+
+        let r2 = seeded_tick(&db, &folder, &mut tracker, &path).await;
+        assert_eq!(
+            r2.enqueued, 0,
+            "a file whose job is retrying must not be enqueued again"
+        );
+        let after = list_jobs(&db, false, 10).await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].state, "retrying");
+        let _ = fs::remove_dir_all(&d);
+    }
+
     #[tokio::test]
     async fn an_already_queued_file_is_not_enqueued_twice() {
         let d = temp("twice");
