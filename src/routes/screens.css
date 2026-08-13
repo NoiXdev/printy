@@ -212,8 +212,6 @@
   transition: color 0.15s ease;
 }
 .link-btn:hover { color: var(--coral); }
-.link-btn.danger { color: var(--danger); }
-.link-btn.danger:hover { color: var(--danger-strong); }
 
 /* ---- Badges, chips and dots --------------------------------------------- */
 .badge {
@@ -397,10 +395,75 @@
 .folder-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 0.75rem;
   flex-wrap: wrap;
   padding-top: 0.35rem;
   border-top: 1px solid var(--ink-08);
+}
+
+/* ---- Folder card overflow menu ------------------------------------------- */
+.folder-menu-wrap { position: relative; }
+.menu-trigger {
+  font: inherit;
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0.3rem 0.65rem;
+  border: 1.5px solid var(--ink-12);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-60);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.menu-trigger:hover { background: var(--ink-08); color: var(--ink); }
+.menu-trigger[aria-expanded="true"] { background: var(--ink-08); color: var(--ink); }
+.folder-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  min-width: 210px;
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--ink-12);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.folder-menu-item {
+  width: 100%;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+.folder-menu-item:hover,
+.folder-menu-item:focus-visible {
+  background: var(--mint-soft);
+  outline: none;
+}
+.folder-menu-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.folder-menu-item.destructive { color: var(--danger); }
+.folder-menu-item.destructive:hover,
+.folder-menu-item.destructive:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger-strong);
+}
+.folder-menu-separator {
+  height: 1px;
+  margin: 0.3rem 0.2rem;
+  border: none;
+  background: var(--ink-08);
 }
 .add-folder-tile {
   width: 100%;

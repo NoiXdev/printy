@@ -127,40 +127,121 @@ describe("FolderCard content", () => {
   });
 });
 
-describe("FolderCard actions", () => {
-  it("offers pause, scan now, edit and reveal, and reports each one", () => {
+function openMenu(name = "Aktionen für Scanner"): void {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
+describe("FolderCard actions menu", () => {
+  it("has a visible '...' button that opens a menu naming the folder", () => {
+    renderCard();
+    expect(
+      screen.getByRole("button", { name: "Aktionen für Scanner" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    openMenu();
+
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+  });
+
+  it("offers pause, scan now, edit, reveal and delete, and reports each one", () => {
     const h = renderCard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Pausieren" }));
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pausieren" }));
     expect(h.onToggleEnabled).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Jetzt scannen" }));
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Jetzt scannen" }));
     expect(h.onScanNow).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Bearbeiten" }));
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Bearbeiten" }));
     expect(h.onEdit).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Im Explorer öffnen" }));
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Im Explorer öffnen" }));
     expect(h.onReveal).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Löschen" }));
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Löschen" }));
     expect(h.onDelete).toHaveBeenCalledTimes(1);
   });
 
-  it("styles the delete action as destructive", () => {
+  it("styles the delete item as destructive and visually separated", () => {
     renderCard();
-    expect(screen.getByRole("button", { name: "Löschen" })).toHaveClass("danger");
+    openMenu();
+    const del = screen.getByRole("menuitem", { name: "Löschen" });
+    expect(del).toHaveClass("destructive");
   });
 
   it("offers resuming instead of pausing on a disabled folder", () => {
     renderCard({ folder: folder({ enabled: 0 }) });
-    expect(screen.getByRole("button", { name: "Fortsetzen" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Pausieren" })).not.toBeInTheDocument();
+    openMenu();
+    expect(screen.getByRole("menuitem", { name: "Fortsetzen" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Pausieren" })).not.toBeInTheDocument();
   });
 
-  it("locks every action while a mutation is in flight", () => {
+  it("locks pause and scan-now while a mutation is in flight, but not edit/reveal/delete", () => {
     renderCard({ busy: true });
-    expect(screen.getByRole("button", { name: "Pausieren" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Jetzt scannen" })).toBeDisabled();
+    openMenu();
+    expect(screen.getByRole("menuitem", { name: "Pausieren" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Jetzt scannen" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Bearbeiten" })).not.toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Im Explorer öffnen" })).not.toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Löschen" })).not.toBeDisabled();
+  });
+
+  it("opens the same menu on a right-click anywhere on the card, instead of the browser's own menu", () => {
+    renderCard();
+    const card = screen.getByText("Scanner").closest("li") as HTMLElement;
+    const event = fireEvent.contextMenu(card);
+
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    // The default browser context menu must not appear alongside it.
+    expect(event).toBe(false); // fireEvent returns false when preventDefault() was called
+  });
+
+  it("closes when clicking outside, and only one card's menu is open at a time", () => {
+    const folderTwo = folder({ id: 2, name: "Rechnungen" });
+    const handlersTwo = {
+      onToggleEnabled: vi.fn(),
+      onScanNow: vi.fn(),
+      onEdit: vi.fn(),
+      onReveal: vi.fn(),
+      onDelete: vi.fn(),
+    };
+    render(
+      <ul>
+        <FolderCard
+          folder={folder()}
+          activity={activity()}
+          queueHeld={false}
+          nowMs={NOW}
+          onToggleEnabled={vi.fn()}
+          onScanNow={vi.fn()}
+          onEdit={vi.fn()}
+          onReveal={vi.fn()}
+          onDelete={vi.fn()}
+        />
+        <FolderCard
+          folder={folderTwo}
+          activity={activity()}
+          queueHeld={false}
+          nowMs={NOW}
+          {...handlersTwo}
+        />
+      </ul>,
+    );
+
+    openMenu("Aktionen für Scanner");
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    openMenu("Aktionen für Rechnungen");
+    // Only the second card's menu remains open -- there is still exactly one.
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    expect(
+      within(screen.getByRole("menu")).getByRole("menuitem", { name: "Bearbeiten" }),
+    ).toBeInTheDocument();
   });
 });

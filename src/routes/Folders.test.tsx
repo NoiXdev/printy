@@ -138,15 +138,17 @@ describe("Folders", () => {
     expect(await screen.findByText("Neuer-Ordner-Platzhalter")).toBeInTheDocument();
   });
 
-  it("navigates to the edit route for a folder's own id from its card", async () => {
+  it("navigates to the edit route for a folder's own id from its card menu", async () => {
     renderScreen();
-    fireEvent.click(await screen.findByRole("button", { name: "Bearbeiten" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Aktionen für Scanner" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Bearbeiten" }));
     expect(await screen.findByTestId("edit-route-placeholder")).toBeInTheDocument();
   });
 
-  it("triggers a manual scan for a single folder", async () => {
+  it("triggers a manual scan for a single folder from its card menu", async () => {
     renderScreen();
-    fireEvent.click(await screen.findByRole("button", { name: "Jetzt scannen" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Aktionen für Scanner" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Jetzt scannen" }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("scan_now_cmd", { id: 1 }),
     );
@@ -184,7 +186,8 @@ describe("Folders", () => {
 
   it("asks for the impact counts and shows them concretely before deleting", async () => {
     renderScreen();
-    fireEvent.click(await screen.findByRole("button", { name: "Löschen" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Aktionen für Scanner" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Löschen" }));
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("folder_delete_impact_cmd", { id: 1 }),
@@ -200,7 +203,8 @@ describe("Folders", () => {
 
   it("cancelling the delete dialog never calls delete_folder_cmd", async () => {
     renderScreen();
-    fireEvent.click(await screen.findByRole("button", { name: "Löschen" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Aktionen für Scanner" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Löschen" }));
     await screen.findByRole("alertdialog");
 
     fireEvent.click(screen.getByRole("button", { name: "Abbrechen" }));
@@ -211,7 +215,8 @@ describe("Folders", () => {
 
   it("confirming the delete dialog calls delete_folder_cmd for the right folder", async () => {
     renderScreen();
-    fireEvent.click(await screen.findByRole("button", { name: "Löschen" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Aktionen für Scanner" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Löschen" }));
     await screen.findByRole("alertdialog");
 
     fireEvent.click(screen.getByRole("button", { name: "Endgültig löschen" }));
