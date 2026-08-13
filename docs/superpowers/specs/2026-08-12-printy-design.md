@@ -51,8 +51,27 @@ means *never enlarge*, not *never scale* — printing an oversized page at natur
 size would push content off the paper, which is data loss, not fidelity.
 
 The flag is snapshotted onto the job at enqueue time, like the printer and copy
-settings, so changing a folder's configuration never retroactively alters jobs
-already waiting in the queue.
+settings.
+
+### Amended again (2026-08-13): editing a folder updates its waiting jobs
+
+The original rule — a folder edit never touches jobs already enqueued — was
+reversed on the user's instruction, and the reasoning is better than the
+original: the realistic case is noticing that the wrong printer was configured,
+and then watching ten queued files go to the wrong device anyway is exactly the
+wrong behaviour.
+
+Editing a folder therefore rewrites `printer_name`, `copies`, `duplex`,
+`color_mode` and `fit_to_page` on that folder's jobs, but **only** those in state
+`queued` or `retrying`.
+
+Two exclusions are deliberate and must not be relaxed:
+
+- **`printing` is never touched.** That job is already handed to the spooler;
+  changing it would either do nothing or switch device mid-document.
+- **`done` and `failed` are never touched.** They are history. Rewriting what a
+  job *was* printed with would make the record lie — the log would name a printer
+  the paper never came out of.
 - Multi-user or server operation. Printy is a single-user desktop application.
 
 ## 3. Stack
