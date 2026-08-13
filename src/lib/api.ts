@@ -6,6 +6,7 @@ import type {
   PrintJob,
   PrinterCapabilities,
   PrinterInfo,
+  ScanAllResult,
   SettingKey,
   WatchFolder,
 } from "./types";
@@ -29,6 +30,7 @@ export const api = {
   setFolderEnabled: (id: number, enabled: boolean) =>
     invoke<void>("set_folder_enabled_cmd", { id, enabled }),
   scanNow: (id: number) => invoke<number>("scan_now_cmd", { id }),
+  scanAllFolders: () => invoke<ScanAllResult>("scan_all_folders_cmd"),
 
   listJobs: (onlyFailed: boolean, limit: number) =>
     invoke<PrintJob[]>("list_jobs_cmd", { onlyFailed, limit }),

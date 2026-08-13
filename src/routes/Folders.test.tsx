@@ -67,6 +67,8 @@ function respond(cmd: string, args?: Record<string, unknown>): unknown {
     case "set_folder_enabled_cmd":
     case "scan_now_cmd":
       return undefined;
+    case "scan_all_folders_cmd":
+      return { folders_scanned: 3, enqueued: 7 };
     default:
       throw new Error(`unexpected command ${cmd} ${JSON.stringify(args)}`);
   }
@@ -127,5 +129,35 @@ describe("Folders", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("scan_now_cmd", { id: 1 }),
     );
+  });
+
+  it("rescans every folder at once, disables the button while running, and reports the total", async () => {
+    // A deferred promise makes the in-flight window observable instead of
+    // racing against a mock that resolves in the same microtask.
+    let resolveScan!: (value: unknown) => void;
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "scan_all_folders_cmd") {
+        return new Promise((resolve) => {
+          resolveScan = resolve;
+        });
+      }
+      return respond(cmd, args);
+    });
+
+    renderScreen();
+    const button = await screen.findByRole("button", { name: "Alle Ordner neu einlesen" });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(invokeMock).toHaveBeenCalledWith("scan_all_folders_cmd");
+
+    resolveScan({ folders_scanned: 3, enqueued: 7 });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("rescan-message")).toHaveTextContent(
+        "7 Dateien aus 3 Ordnern eingelesen.",
+      ),
+    );
+    expect(button).not.toBeDisabled();
   });
 });

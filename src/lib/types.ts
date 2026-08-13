@@ -98,6 +98,12 @@ export interface AppStatus {
   user_paused: boolean;
 }
 
+/** Result of `scan_all_folders_cmd`: one rescan of every enabled folder. */
+export interface ScanAllResult {
+  folders_scanned: number;
+  enqueued: number;
+}
+
 export type AppSettings = Record<SettingKey, string>;
 
 /** Payload of `printy://job`. The debug name of `queue::worker::QueueOutcome`. */

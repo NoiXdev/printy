@@ -18,6 +18,7 @@ export default function Folders(): JSX.Element {
   const [queueHeld, setQueueHeld] = useState(false);
   const [holdReason, setHoldReason] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [rescanMessage, setRescanMessage] = useState<string | null>(null);
 
   const folders = useQuery({ queryKey: ["folders"], queryFn: api.listFolders });
   const jobs = useQuery({
@@ -98,6 +99,17 @@ export default function Folders(): JSX.Element {
     onSuccess: invalidateAll,
   });
 
+  const scanAllFolders = useMutation({
+    mutationFn: () => api.scanAllFolders(),
+    onSuccess: (result) => {
+      invalidateAll();
+      const files = result.enqueued === 1 ? "1 Datei" : `${result.enqueued} Dateien`;
+      const scanned =
+        result.folders_scanned === 1 ? "1 Ordner" : `${result.folders_scanned} Ordnern`;
+      setRescanMessage(`${files} aus ${scanned} eingelesen.`);
+    },
+  });
+
   const save = useMutation({
     mutationFn: (vars: { id: number | null; result: FolderDialogResult }) =>
       vars.id === null
@@ -122,6 +134,17 @@ export default function Folders(): JSX.Element {
             ? "Lade …"
             : `${status.data.active_folders} aktiv · ${status.data.printed_today} heute gedruckt`}
         </span>
+        <button
+          type="button"
+          className="btn"
+          disabled={scanAllFolders.isPending}
+          onClick={() => {
+            setRescanMessage(null);
+            scanAllFolders.mutate();
+          }}
+        >
+          {scanAllFolders.isPending ? "Ordner werden neu eingelesen …" : "Alle Ordner neu einlesen"}
+        </button>
         <label className="switch-label" htmlFor="global-pause">
           <span className="switch">
             <input
@@ -136,6 +159,12 @@ export default function Folders(): JSX.Element {
           <span>Alles pausieren</span>
         </label>
       </div>
+
+      {rescanMessage && (
+        <p className="helper" role="status" data-testid="rescan-message">
+          {rescanMessage}
+        </p>
+      )}
 
       {queueHeld && (
         <p className="folder-error" role="status">

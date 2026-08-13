@@ -4,6 +4,7 @@ use crate::intake::dedup::{sha256_file, should_enqueue};
 use crate::intake::post::PostAction;
 use crate::intake::scan::scan_folder;
 use crate::intake::stability::{is_readable, stamp, StabilityTracker};
+use serde::Serialize;
 use std::path::Path;
 use std::time::Duration;
 
@@ -107,6 +108,42 @@ pub async fn scan_now(
     tick_folder(db, folder, &mut tracker).await?;
     tokio::time::sleep(delay).await;
     tick_folder(db, folder, &mut tracker).await
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ScanAllResult {
+    pub folders_scanned: usize,
+    pub enqueued: usize,
+}
+
+/// Scans every *enabled* folder at once, running each folder's `scan_now`
+/// concurrently rather than one after another -- each folder waits out
+/// `delay` for its second observation, so scanning ten folders sequentially
+/// would mean a ten-second wait for a button click.
+///
+/// A folder whose path has gone missing does not abort the run for the
+/// others: `tick_folder` already reports that case as `Ok` with
+/// `enqueued == 0` rather than an error. Any other per-folder failure (a
+/// database error, or a panic inside the spawned task) is likewise excluded
+/// from the total instead of failing the whole scan.
+pub async fn scan_all_enabled(db: &Db, delay: Duration) -> Result<ScanAllResult, sqlx::Error> {
+    let all = folders::list_folders(db).await?;
+    let enabled: Vec<WatchFolder> = all.into_iter().filter(|f| f.enabled != 0).collect();
+    let folders_scanned = enabled.len();
+
+    let mut set = tokio::task::JoinSet::new();
+    for folder in enabled {
+        let db = db.clone();
+        set.spawn(async move { scan_now(&db, &folder, delay).await });
+    }
+
+    let mut enqueued = 0usize;
+    while let Some(res) = set.join_next().await {
+        if let Ok(Ok(report)) = res {
+            enqueued += report.enqueued;
+        }
+    }
+    Ok(ScanAllResult { folders_scanned, enqueued })
 }
 
 /// Records everything currently in the folder as already handled, without
@@ -483,5 +520,85 @@ mod tests {
         assert_eq!(report.enqueued, 1);
         assert_eq!(list_jobs(&db, false, 10).await.unwrap().len(), 1);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    async fn folder_with_file(
+        db: &crate::db::Db, dir: &std::path::Path, name: &str, enabled: bool,
+    ) -> i64 {
+        let f = create_folder(db, &NewFolder {
+            name: name.into(), path: dir.to_string_lossy().into(), poll_interval_secs: 5,
+            file_types: vec!["pdf".into()], printer_name: "P".into(), copies: 1,
+            duplex: "simplex".into(), color_mode: "mono".into(), post_action: "move".into(),
+            fit_to_page: true,
+        }).await.unwrap();
+        fs::write(dir.join("a.pdf"), b"payload").unwrap();
+        if !enabled {
+            crate::db::folders::set_folder_enabled(db, f.id, false).await.unwrap();
+        }
+        f.id
+    }
+
+    /// A disabled folder is skipped entirely, and a folder whose path has
+    /// gone missing must not abort the run for the others -- their files are
+    /// still counted.
+    #[tokio::test]
+    async fn scan_all_enabled_skips_disabled_and_survives_a_missing_path() {
+        let db = connect("sqlite::memory:").await.unwrap();
+
+        let d1 = temp("scanall_ok");
+        folder_with_file(&db, &d1, "F1", true).await;
+
+        let d2 = temp("scanall_disabled");
+        folder_with_file(&db, &d2, "F2", false).await;
+
+        create_folder(&db, &NewFolder {
+            name: "F3".into(), path: "/tmp/printy-scanall-missing-xyz".into(),
+            poll_interval_secs: 5, file_types: vec!["pdf".into()], printer_name: "P".into(),
+            copies: 1, duplex: "simplex".into(), color_mode: "mono".into(),
+            post_action: "move".into(), fit_to_page: true,
+        }).await.unwrap();
+
+        let result = scan_all_enabled(&db, Duration::from_millis(10)).await.unwrap();
+        assert_eq!(result.folders_scanned, 2, "the disabled folder is not counted");
+        assert_eq!(
+            result.enqueued, 1,
+            "the missing-path folder must not abort the run for the others"
+        );
+        assert_eq!(list_jobs(&db, false, 10).await.unwrap().len(), 1);
+
+        let _ = fs::remove_dir_all(&d1);
+        let _ = fs::remove_dir_all(&d2);
+    }
+
+    /// Folders are scanned concurrently: five folders at a 200ms
+    /// per-folder delay must finish in well under 5 * 200ms, which is what a
+    /// sequential scan would take.
+    #[tokio::test]
+    async fn scan_all_enabled_runs_folders_concurrently() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let mut dirs = Vec::new();
+        for i in 0..5 {
+            let d = temp(&format!("scanall_concurrent_{i}"));
+            folder_with_file(&db, &d, &format!("F{i}"), true).await;
+            dirs.push(d);
+        }
+
+        let delay = Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let result = scan_all_enabled(&db, delay).await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.folders_scanned, 5);
+        assert_eq!(result.enqueued, 5);
+        assert!(
+            elapsed < delay * 3,
+            "5 folders at {delay:?} each finished in {elapsed:?}; \
+             sequential scanning would take close to {:?}",
+            delay * 5,
+        );
+
+        for d in dirs {
+            let _ = fs::remove_dir_all(&d);
+        }
     }
 }

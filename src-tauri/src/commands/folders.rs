@@ -1,6 +1,8 @@
 use crate::db::folders::{self, NewFolder};
 use crate::db::models::WatchFolder;
-use crate::watcher::tick::{mark_existing_as_seen, scan_now, SCAN_NOW_STABILITY_DELAY};
+use crate::watcher::tick::{
+    mark_existing_as_seen, scan_all_enabled, scan_now, ScanAllResult, SCAN_NOW_STABILITY_DELAY,
+};
 use crate::{error::AppResult, AppState};
 use tauri::State;
 
@@ -59,4 +61,15 @@ pub async fn scan_now_cmd(state: State<'_, AppState>, id: i64) -> AppResult<usiz
     let db = state.db.clone();
     let report = scan_now(&db, &folder, SCAN_NOW_STABILITY_DELAY).await?;
     Ok(report.enqueued)
+}
+
+/// Scans every enabled folder at once, reusing `scan_now`'s fixed
+/// two-observation logic so the "rescan everything" button gives the exact
+/// same stability guarantee as a single-folder manual scan. See
+/// `watcher::tick::scan_all_enabled` for how folders are run concurrently and
+/// how a missing or failing folder is kept from aborting the others.
+#[tauri::command]
+pub async fn scan_all_folders_cmd(state: State<'_, AppState>) -> AppResult<ScanAllResult> {
+    let db = state.db.clone();
+    Ok(scan_all_enabled(&db, SCAN_NOW_STABILITY_DELAY).await?)
 }

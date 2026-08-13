@@ -77,6 +77,7 @@ pub fn run() {
             commands::folders::delete_folder_cmd,
             commands::folders::set_folder_enabled_cmd,
             commands::folders::scan_now_cmd,
+            commands::folders::scan_all_folders_cmd,
             commands::jobs::get_status_cmd,
             commands::jobs::list_jobs_cmd,
             commands::jobs::reprint_job_cmd,
