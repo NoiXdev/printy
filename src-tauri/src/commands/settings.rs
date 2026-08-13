@@ -9,7 +9,7 @@ const KEYS: &[(&str, &str)] = &[
     ("start_minimized", "0"),
     ("sumatra_path", ""),
     ("pdfium_path", ""),
-    ("default_poll_interval_secs", "1"),
+    ("default_poll_interval_secs", "3"),
     ("user_paused", "0"),
 ];
 

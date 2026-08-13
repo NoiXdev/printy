@@ -68,7 +68,7 @@ pub async fn default_poll_interval_secs(db: &Db) -> i64 {
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(1)
+        .unwrap_or(3)
         .max(1)
 }
 
@@ -85,7 +85,7 @@ mod tests {
         assert!(!start_minimized(&db).await);
         assert!(sumatra_path(&db).await.is_none());
         assert!(pdfium_path(&db).await.is_none());
-        assert_eq!(default_poll_interval_secs(&db).await, 1);
+        assert_eq!(default_poll_interval_secs(&db).await, 3);
     }
 
     #[tokio::test]
@@ -106,7 +106,7 @@ mod tests {
         set_setting(&db, "default_poll_interval_secs", "0").await.unwrap();
         assert_eq!(default_poll_interval_secs(&db).await, 1);
         set_setting(&db, "default_poll_interval_secs", "banana").await.unwrap();
-        assert_eq!(default_poll_interval_secs(&db).await, 1);
+        assert_eq!(default_poll_interval_secs(&db).await, 3);
         set_setting(&db, "default_poll_interval_secs", "7").await.unwrap();
         assert_eq!(default_poll_interval_secs(&db).await, 7);
     }
