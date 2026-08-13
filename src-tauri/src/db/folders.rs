@@ -1,3 +1,4 @@
+use crate::db::jobs;
 use crate::db::models::WatchFolder;
 use crate::db::Db;
 use serde::Deserialize;
@@ -55,7 +56,7 @@ pub async fn get_folder(db: &Db, id: i64) -> Result<Option<WatchFolder>, sqlx::E
 
 pub async fn update_folder(db: &Db, id: i64, n: &NewFolder) -> Result<WatchFolder, sqlx::Error> {
     let (interval, copies, types) = clamp(n);
-    sqlx::query_as::<_, WatchFolder>(
+    let updated = sqlx::query_as::<_, WatchFolder>(
         "UPDATE watch_folder SET
            name = ?, path = ?, poll_interval_secs = ?, file_types = ?,
            printer_name = ?, copies = ?, duplex = ?, color_mode = ?,
@@ -66,7 +67,24 @@ pub async fn update_folder(db: &Db, id: i64, n: &NewFolder) -> Result<WatchFolde
     .bind(copies).bind(&n.duplex).bind(&n.color_mode).bind(&n.post_action)
     .bind(n.fit_to_page as i64).bind(id)
     .fetch_one(db)
-    .await
+    .await?;
+
+    // Editing a folder rewrites its still-waiting jobs -- see
+    // `jobs::update_waiting_jobs_for_folder` for exactly which states and why.
+    // Sourced from the row just persisted (not `n`) so the snapshot matches
+    // the clamped values actually stored on the folder.
+    jobs::update_waiting_jobs_for_folder(
+        db,
+        id,
+        &updated.printer_name,
+        updated.copies,
+        &updated.duplex,
+        &updated.color_mode,
+        updated.fit_to_page != 0,
+    )
+    .await?;
+
+    Ok(updated)
 }
 
 pub async fn delete_folder(db: &Db, id: i64) -> Result<(), sqlx::Error> {
@@ -91,6 +109,9 @@ pub async fn set_folder_status(db: &Db, id: i64, status: &str) -> Result<(), sql
 mod tests {
     use super::*;
     use crate::db::connect;
+    use crate::db::jobs::{
+        enqueue_job, get_job, mark_done, mark_failed, mark_printing, mark_retrying, NewJob,
+    };
 
     fn sample() -> NewFolder {
         NewFolder {
@@ -200,5 +221,84 @@ mod tests {
 
         let refetched = get_folder(&db, f.id).await.unwrap().unwrap();
         assert_eq!(refetched.fit_to_page, 0);
+    }
+
+    #[tokio::test]
+    async fn update_folder_rewrites_only_queued_and_retrying_jobs() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        let f = create_folder(&db, &sample()).await.unwrap();
+
+        let template = |name: &str, hash: &str| NewJob {
+            folder_id: f.id,
+            file_path: format!("/tmp/printy-scans/{name}"),
+            file_name: name.into(),
+            size_bytes: 10,
+            mtime_ms: 1,
+            sha256: hash.into(),
+            printer_name: "Brother".into(),
+            copies: 1,
+            duplex: "simplex".into(),
+            color_mode: "mono".into(),
+            fit_to_page: true,
+        };
+
+        // One job in each of the five states, all present at once.
+        let queued = enqueue_job(&db, &template("queued.pdf", "h1")).await.unwrap();
+
+        let printing = enqueue_job(&db, &template("printing.pdf", "h2")).await.unwrap();
+        mark_printing(&db, printing.id).await.unwrap();
+
+        let retrying = enqueue_job(&db, &template("retrying.pdf", "h3")).await.unwrap();
+        mark_printing(&db, retrying.id).await.unwrap();
+        mark_retrying(&db, retrying.id, "file", "kaputt", 10_000).await.unwrap();
+
+        let done = enqueue_job(&db, &template("done.pdf", "h4")).await.unwrap();
+        mark_printing(&db, done.id).await.unwrap();
+        mark_done(&db, done.id).await.unwrap();
+
+        let failed = enqueue_job(&db, &template("failed.pdf", "h5")).await.unwrap();
+        mark_failed(&db, failed.id, "file", "kaputt").await.unwrap();
+
+        // Edit the folder: new printer, copies, duplex, colour and fit_to_page.
+        let mut edited = sample();
+        edited.printer_name = "Xerox".into();
+        edited.copies = 5;
+        edited.duplex = "long_edge".into();
+        edited.color_mode = "color".into();
+        edited.fit_to_page = false;
+        update_folder(&db, f.id, &edited).await.unwrap();
+
+        // The two waiting jobs picked up the new settings.
+        for id in [queued.id, retrying.id] {
+            let j = get_job(&db, id).await.unwrap().unwrap();
+            assert_eq!(j.printer_name, "Xerox");
+            assert_eq!(j.copies, 5);
+            assert_eq!(j.duplex, "long_edge");
+            assert_eq!(j.color_mode, "color");
+            assert_eq!(j.fit_to_page, 0);
+        }
+
+        // The printing job is never touched -- already handed to the spooler.
+        let printing_after = get_job(&db, printing.id).await.unwrap().unwrap();
+        assert_eq!(printing_after.printer_name, "Brother");
+        assert_eq!(printing_after.copies, 1);
+        assert_eq!(printing_after.duplex, "simplex");
+        assert_eq!(printing_after.color_mode, "mono");
+        assert_eq!(printing_after.fit_to_page, 1);
+
+        // done and failed jobs are history and must not be rewritten either.
+        let done_after = get_job(&db, done.id).await.unwrap().unwrap();
+        assert_eq!(done_after.printer_name, "Brother");
+        assert_eq!(done_after.copies, 1);
+        assert_eq!(done_after.duplex, "simplex");
+        assert_eq!(done_after.color_mode, "mono");
+        assert_eq!(done_after.fit_to_page, 1);
+
+        let failed_after = get_job(&db, failed.id).await.unwrap().unwrap();
+        assert_eq!(failed_after.printer_name, "Brother");
+        assert_eq!(failed_after.copies, 1);
+        assert_eq!(failed_after.duplex, "simplex");
+        assert_eq!(failed_after.color_mode, "mono");
+        assert_eq!(failed_after.fit_to_page, 1);
     }
 }

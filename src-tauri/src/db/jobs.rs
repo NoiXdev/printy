@@ -146,6 +146,38 @@ pub async fn job_seen_for_stamp(
     Ok(n > 0)
 }
 
+/// Applied when a folder is edited (spec section "Amended again (2026-08-13):
+/// editing a folder updates its waiting jobs"). Rewrites the printer/copies/
+/// duplex/colour/fit-to-page snapshot on jobs that have not yet been handed to
+/// the spooler, so a corrected printer actually takes effect on files already
+/// sitting in the queue instead of going to the wrong device anyway.
+///
+/// Deliberately excludes:
+/// - `printing`: already handed to the spooler; changing it would either do
+///   nothing or switch device mid-document.
+/// - `done` and `failed`: history. Rewriting what a job *was* printed with
+///   would make the record lie about what actually came out of the printer.
+pub async fn update_waiting_jobs_for_folder(
+    db: &Db,
+    folder_id: i64,
+    printer_name: &str,
+    copies: i64,
+    duplex: &str,
+    color_mode: &str,
+    fit_to_page: bool,
+) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE print_job SET printer_name = ?, copies = ?, duplex = ?,
+           color_mode = ?, fit_to_page = ?
+         WHERE folder_id = ? AND state IN ('queued', 'retrying')",
+    )
+    .bind(printer_name).bind(copies).bind(duplex).bind(color_mode)
+    .bind(fit_to_page as i64).bind(folder_id)
+    .execute(db)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 pub async fn list_jobs(
     db: &Db, only_failed: bool, limit: i64,
 ) -> Result<Vec<PrintJob>, sqlx::Error> {
