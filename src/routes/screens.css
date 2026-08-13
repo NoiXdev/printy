@@ -441,38 +441,11 @@
   color: var(--ink-45);
 }
 
-/* ---- Modal -------------------------------------------------------------- */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(10, 40, 38, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-  z-index: 100;
+/* ---- Folder form page ---------------------------------------------------- */
+.back-link {
+  display: inline-block;
+  margin-bottom: 0.75rem;
 }
-.modal {
-  width: 100%;
-  max-width: 620px;
-  max-height: 86vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  background: var(--surface);
-  border: 1px solid var(--ink-08);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-md);
-  padding: 1.25rem 1.4rem;
-}
-.modal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-.modal-head h2 { margin: 0; font-family: var(--font-display); }
 .modal-actions {
   display: flex;
   justify-content: flex-end;

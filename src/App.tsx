@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from "react";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import Folders from "./routes/Folders";
+import FolderForm from "./routes/FolderForm";
 import Settings from "./routes/Settings";
 import Logo from "./components/Logo";
 import { useJobNotifications } from "./lib/useJobNotifications";
@@ -53,6 +54,8 @@ function App(): JSX.Element {
         <main className="content">
           <Routes>
             <Route path="/" element={<Folders />} />
+            <Route path="/ordner/neu" element={<FolderForm />} />
+            <Route path="/ordner/:id" element={<FolderForm />} />
             <Route path="/einstellungen" element={<Settings />} />
           </Routes>
         </main>

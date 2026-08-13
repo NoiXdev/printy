@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type JSX } from "react";
+import { useEffect, useRef, useState, type FormEvent, type JSX } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ColorMode,
@@ -61,6 +61,10 @@ export interface FolderDialogProps {
 }
 
 const UNSUPPORTED = "Dieser Drucker unterstützt das nicht.";
+
+/** Shown when the user tries to leave a form they have already changed. */
+const DISCARD_CHANGES_PROMPT =
+  "Ungespeicherte Änderungen verwerfen? Die eingegebenen Daten gehen sonst verloren.";
 
 interface FormState {
   name: string;
@@ -128,6 +132,17 @@ export default function FolderDialog({
   );
   const [printExisting, setPrintExisting] = useState(false);
   const [existingCount, setExistingCount] = useState<number | null>(null);
+
+  // Captured once on mount so a later edit can be compared against it -- the
+  // page's only way back must never throw work away silently.
+  const initialFormRef = useRef(form);
+  const isDirty =
+    printExisting || JSON.stringify(form) !== JSON.stringify(initialFormRef.current);
+
+  function handleCancel(): void {
+    if (isDirty && !window.confirm(DISCARD_CHANGES_PROMPT)) return;
+    onCancel();
+  }
 
   const fileTypes = fileTypesFromChipIds(form.chipIds);
   const intervalSecs = Math.max(1, Number.parseInt(form.pollInterval, 10) || 1);
@@ -208,14 +223,12 @@ export default function FolderDialog({
       : `Vorhandene ${existingCount} Dateien jetzt mitdrucken`;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={
-      creating ? "Ordner hinzufügen" : "Ordner bearbeiten"
-    }>
-      <form className="modal" onSubmit={handleSubmit}>
-        <div className="modal-head">
-          <h2>{creating ? "Ordner hinzufügen" : "Ordner bearbeiten"}</h2>
-        </div>
-
+    <section className="screen">
+      <button type="button" className="link-btn back-link" onClick={handleCancel}>
+        ← Zurück
+      </button>
+      <h1>{creating ? "Ordner hinzufügen" : "Ordner bearbeiten"}</h1>
+      <form className="card" onSubmit={handleSubmit}>
         <div className="field">
           <label htmlFor="fd-name">Name</label>
           <input
@@ -381,7 +394,7 @@ export default function FolderDialog({
         )}
 
         <div className="modal-actions">
-          <button type="button" className="link-btn" onClick={onCancel}>
+          <button type="button" className="link-btn" onClick={handleCancel}>
             Abbrechen
           </button>
           <button type="submit" className="btn" disabled={!valid || saving}>
@@ -389,6 +402,6 @@ export default function FolderDialog({
           </button>
         </div>
       </form>
-    </div>
+    </section>
   );
 }

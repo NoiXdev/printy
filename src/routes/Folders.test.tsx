@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -80,7 +81,18 @@ function renderScreen() {
   });
   render(
     <QueryClientProvider client={client}>
-      <Folders />
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route path="/" element={<Folders />} />
+          {/* Stand-ins for the real FolderForm route: Folders only needs to
+              prove it navigates there, not what that page renders. */}
+          <Route path="/ordner/neu" element={<div>Neuer-Ordner-Platzhalter</div>} />
+          <Route
+            path="/ordner/:id"
+            element={<div data-testid="edit-route-placeholder">Ordner-bearbeiten-Platzhalter</div>}
+          />
+        </Routes>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -117,10 +129,16 @@ describe("Folders", () => {
     );
   });
 
-  it("opens the dialog from the add tile", async () => {
+  it("navigates to the create-folder route from the add tile", async () => {
     renderScreen();
     fireEvent.click(await screen.findByRole("button", { name: "Ordner hinzufügen" }));
-    expect(await screen.findByRole("dialog", { name: "Ordner hinzufügen" })).toBeInTheDocument();
+    expect(await screen.findByText("Neuer-Ordner-Platzhalter")).toBeInTheDocument();
+  });
+
+  it("navigates to the edit route for a folder's own id from its card", async () => {
+    renderScreen();
+    fireEvent.click(await screen.findByRole("button", { name: "Bearbeiten" }));
+    expect(await screen.findByTestId("edit-route-placeholder")).toBeInTheDocument();
   });
 
   it("triggers a manual scan for a single folder", async () => {

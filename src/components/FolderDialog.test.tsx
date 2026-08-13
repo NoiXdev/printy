@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import type { ComponentProps } from "react";
@@ -240,5 +240,81 @@ describe("FolderDialog form", () => {
     expect(screen.getByLabelText("Nach dem Druck")).toHaveTextContent("Liegen lassen");
     expect(screen.getByLabelText("Inhalt an Seite anpassen")).toBeChecked();
     expect(screen.getByRole("button", { name: "Speichern" })).toBeInTheDocument();
+  });
+
+  it("renders as a page with its own heading, not a modal dialog", () => {
+    renderDialog();
+    expect(screen.getByRole("heading", { name: "Ordner hinzufügen" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("titles the heading for editing an existing folder", () => {
+    renderDialog({ folder: existing() });
+    expect(screen.getByRole("heading", { name: "Ordner bearbeiten" })).toBeInTheDocument();
+  });
+});
+
+describe("FolderDialog unsaved-changes guard", () => {
+  // `window.confirm` is stubbed per test; jsdom has no real implementation to
+  // fall back to, and an un-restored spy would otherwise leak into whichever
+  // test runs next.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("leaves without asking when nothing was changed", () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+    const { onCancel } = renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "← Zurück" }));
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for confirmation before discarding an edited field, from the top back link", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { onCancel } = renderDialog();
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Scanner" } });
+    fireEvent.click(screen.getByRole("button", { name: "← Zurück" }));
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // The user said "no, keep editing" -- the page must stay put.
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("asks for confirmation before discarding from the bottom Abbrechen button too", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { onCancel } = renderDialog();
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Scanner" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abbrechen" }));
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("discards the change once the user confirms", () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { onCancel } = renderDialog();
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Scanner" } });
+    fireEvent.click(screen.getByRole("button", { name: "← Zurück" }));
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats opting into printing existing files as a change worth guarding", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderDialog();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Vorhandene 23 Dateien jetzt mitdrucken")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByLabelText(/jetzt mitdrucken/));
+    fireEvent.click(screen.getByRole("button", { name: "← Zurück" }));
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
   });
 });

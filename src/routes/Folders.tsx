@@ -1,20 +1,19 @@
 import { useEffect, useState, type JSX } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
 import { onFolderEvent, onJobEvent, onPausedEvent, onQueueEvent } from "../lib/events";
 import { folderActivity } from "../lib/format";
 import type { WatchFolder } from "../lib/types";
 import FolderCard from "../components/FolderCard";
-import FolderDialog, { type FolderDialogResult } from "../components/FolderDialog";
 import "./screens.css";
 
 const JOB_LIMIT = 300;
 
 export default function Folders(): JSX.Element {
   const qc = useQueryClient();
-  const [dialogFor, setDialogFor] = useState<WatchFolder | null | undefined>(undefined);
-  const [capabilityPrinter, setCapabilityPrinter] = useState<string | null>(null);
+  const navigate = useNavigate();
   const [queueHeld, setQueueHeld] = useState(false);
   const [holdReason, setHoldReason] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -26,24 +25,6 @@ export default function Folders(): JSX.Element {
     queryFn: () => api.listJobs(false, JOB_LIMIT),
   });
   const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus });
-  const printers = useQuery({ queryKey: ["printers"], queryFn: api.listPrinters });
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
-  const defaultPollIntervalSecs = Math.max(
-    1,
-    Number.parseInt(settings.data?.default_poll_interval_secs ?? "1", 10) || 1,
-  );
-
-  const activePrinter =
-    capabilityPrinter ??
-    printers.data?.find((p) => p.is_default)?.name ??
-    printers.data?.[0]?.name ??
-    null;
-
-  const capabilities = useQuery({
-    queryKey: ["capabilities", activePrinter],
-    queryFn: () => api.printerCapabilities(activePrinter as string),
-    enabled: activePrinter !== null,
-  });
 
   // The retry countdown has to tick without a backend push.
   useEffect(() => {
@@ -107,17 +88,6 @@ export default function Folders(): JSX.Element {
       const scanned =
         result.folders_scanned === 1 ? "1 Ordner" : `${result.folders_scanned} Ordnern`;
       setRescanMessage(`${files} aus ${scanned} eingelesen.`);
-    },
-  });
-
-  const save = useMutation({
-    mutationFn: (vars: { id: number | null; result: FolderDialogResult }) =>
-      vars.id === null
-        ? api.createFolder(vars.result.folder, vars.result.printExisting)
-        : api.updateFolder(vars.id, vars.result.folder),
-    onSuccess: () => {
-      invalidateAll();
-      setDialogFor(undefined);
     },
   });
 
@@ -190,10 +160,7 @@ export default function Folders(): JSX.Element {
               busy={busy}
               onToggleEnabled={(folder) => toggleFolder.mutate(folder)}
               onScanNow={(folder) => scanNow.mutate(folder)}
-              onEdit={(folder) => {
-                setCapabilityPrinter(folder.printer_name);
-                setDialogFor(folder);
-              }}
+              onEdit={(folder) => navigate(`/ordner/${folder.id}`)}
               onReveal={(folder) => void revealItemInDir(folder.path)}
             />
           ))}
@@ -212,26 +179,10 @@ export default function Folders(): JSX.Element {
         type="button"
         className="add-folder-tile"
         style={{ marginTop: "0.75rem" }}
-        onClick={() => setDialogFor(null)}
+        onClick={() => navigate("/ordner/neu")}
       >
         <span aria-hidden="true">+ </span>Ordner hinzufügen
       </button>
-
-      {dialogFor !== undefined && (
-        <FolderDialog
-          folder={dialogFor}
-          printers={printers.data ?? []}
-          capabilities={capabilities.data ?? null}
-          countExisting={(path, fileTypes) => api.countExistingFiles(path, fileTypes)}
-          defaultPollIntervalSecs={defaultPollIntervalSecs}
-          onPrinterChange={setCapabilityPrinter}
-          onCancel={() => setDialogFor(undefined)}
-          onSubmit={(result) =>
-            save.mutate({ id: dialogFor === null ? null : dialogFor.id, result })
-          }
-          saving={save.isPending}
-        />
-      )}
     </section>
   );
 }
