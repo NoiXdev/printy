@@ -59,6 +59,19 @@ pub async fn pdfium_path(db: &Db) -> Option<String> {
     get_setting(db, "pdfium_path").await.ok().flatten().filter(|s| !s.is_empty())
 }
 
+/// New folders prefill their per-folder poll interval from this; existing
+/// folders are never touched by it. Floored at 1, matching the per-folder
+/// `MIN_POLL_INTERVAL_SECS`.
+pub async fn default_poll_interval_secs(db: &Db) -> i64 {
+    get_setting(db, "default_poll_interval_secs")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +85,7 @@ mod tests {
         assert!(!start_minimized(&db).await);
         assert!(sumatra_path(&db).await.is_none());
         assert!(pdfium_path(&db).await.is_none());
+        assert_eq!(default_poll_interval_secs(&db).await, 1);
     }
 
     #[tokio::test]
@@ -84,6 +98,17 @@ mod tests {
             pdfium_path(&db).await.as_deref(),
             Some("/opt/pdfium/libpdfium.dylib"),
         );
+    }
+
+    #[tokio::test]
+    async fn default_poll_interval_secs_is_floored_and_ignores_garbage() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        set_setting(&db, "default_poll_interval_secs", "0").await.unwrap();
+        assert_eq!(default_poll_interval_secs(&db).await, 1);
+        set_setting(&db, "default_poll_interval_secs", "banana").await.unwrap();
+        assert_eq!(default_poll_interval_secs(&db).await, 1);
+        set_setting(&db, "default_poll_interval_secs", "7").await.unwrap();
+        assert_eq!(default_poll_interval_secs(&db).await, 7);
     }
 
     #[tokio::test]

@@ -47,6 +47,7 @@ function renderDialog(props: Partial<ComponentProps<typeof FolderDialog>> = {}) 
       printers={PRINTERS}
       capabilities={ALL_CAPS}
       countExisting={async () => 23}
+      defaultPollIntervalSecs={5}
       onPrinterChange={onPrinterChange}
       onCancel={onCancel}
       onSubmit={onSubmit}
@@ -191,6 +192,16 @@ describe("FolderDialog form", () => {
     expect(screen.getByTestId("interval-hint")).toHaveTextContent(
       "bis zu 10 Sekunden nach dem Auftauchen gedruckt",
     );
+  });
+
+  it("prefills the interval from the default poll setting when creating", () => {
+    renderDialog({ defaultPollIntervalSecs: 1 });
+    expect(screen.getByLabelText("Prüfintervall (Sekunden)")).toHaveValue(1);
+  });
+
+  it("ignores the default poll setting when editing an existing folder", () => {
+    renderDialog({ folder: existing({ poll_interval_secs: 30 }), defaultPollIntervalSecs: 1 });
+    expect(screen.getByLabelText("Prüfintervall (Sekunden)")).toHaveValue(30);
   });
 
   it("uses the native folder picker", async () => {

@@ -16,6 +16,7 @@ export type SettingKey =
   | "start_minimized"
   | "sumatra_path"
   | "pdfium_path"
+  | "default_poll_interval_secs"
   | "user_paused";
 
 /** A row of `watch_folder`. `enabled` and `fit_to_page` are SQLite integer booleans. */

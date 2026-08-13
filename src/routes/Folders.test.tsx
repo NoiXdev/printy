@@ -53,6 +53,16 @@ function respond(cmd: string, args?: Record<string, unknown>): unknown {
         failed: 0,
         user_paused: false,
       };
+    case "get_settings_cmd":
+      return {
+        notification_mode: "all",
+        autostart: "0",
+        start_minimized: "0",
+        sumatra_path: "",
+        pdfium_path: "",
+        default_poll_interval_secs: "5",
+        user_paused: "0",
+      };
     case "set_global_paused_cmd":
     case "set_folder_enabled_cmd":
     case "scan_now_cmd":

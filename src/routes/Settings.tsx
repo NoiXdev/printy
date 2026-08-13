@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
+import { stabilityHint } from "../lib/format";
 import { isWindows } from "../lib/platform";
 import { applyTheme, getThemeChoice, type ThemeChoice } from "../lib/theme";
 import type { NotificationMode, SettingKey } from "../lib/types";
@@ -32,6 +33,7 @@ export default function Settings(): JSX.Element {
   const [theme, setTheme] = useState<ThemeChoice>(() => getThemeChoice());
   const [sumatra, setSumatra] = useState("");
   const [pdfium, setPdfium] = useState("");
+  const [defaultInterval, setDefaultInterval] = useState("1");
   const [dbPath, setDbPath] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
 
@@ -55,6 +57,13 @@ export default function Settings(): JSX.Element {
     }
   }, [settings.data]);
 
+  const intervalTouched = useRef(false);
+  useEffect(() => {
+    if (settings.data !== undefined && !intervalTouched.current) {
+      setDefaultInterval(settings.data.default_poll_interval_secs);
+    }
+  }, [settings.data]);
+
   useEffect(() => {
     void appDataDir()
       .then((dir) => join(dir, "printy.sqlite"))
@@ -75,6 +84,7 @@ export default function Settings(): JSX.Element {
 
   const notificationMode = (settings.data?.notification_mode ?? "all") as NotificationMode;
   const startMinimized = settings.data?.start_minimized === "1";
+  const intervalSecs = Math.max(1, Number.parseInt(defaultInterval, 10) || 1);
 
   function handleTheme(choice: ThemeChoice): void {
     // localStorage only. The theme has to be applied before the first paint,
@@ -200,6 +210,38 @@ export default function Settings(): JSX.Element {
               {opt.label}
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Ordner-Überwachung</h2>
+        <div className="field">
+          <label htmlFor="set-default-interval">
+            Standard-Prüfintervall für neue Ordner (Sekunden)
+          </label>
+          <input
+            id="set-default-interval"
+            className="input"
+            type="number"
+            min={1}
+            value={defaultInterval}
+            onChange={(e) => {
+              intervalTouched.current = true;
+              setDefaultInterval(e.target.value);
+            }}
+            onBlur={() => {
+              const clamped = String(intervalSecs);
+              setDefaultInterval(clamped);
+              updateSetting.mutate({
+                key: "default_poll_interval_secs",
+                value: clamped,
+              });
+            }}
+          />
+          <p className="helper" data-testid="default-interval-hint">
+            {stabilityHint(intervalSecs)} Gilt nur als Vorbelegung für neu
+            angelegte Ordner; bestehende Ordner behalten ihr eigenes Intervall.
+          </p>
         </div>
       </div>
 

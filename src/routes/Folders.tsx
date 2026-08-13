@@ -26,6 +26,11 @@ export default function Folders(): JSX.Element {
   });
   const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus });
   const printers = useQuery({ queryKey: ["printers"], queryFn: api.listPrinters });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
+  const defaultPollIntervalSecs = Math.max(
+    1,
+    Number.parseInt(settings.data?.default_poll_interval_secs ?? "1", 10) || 1,
+  );
 
   const activePrinter =
     capabilityPrinter ??
@@ -189,6 +194,7 @@ export default function Folders(): JSX.Element {
           printers={printers.data ?? []}
           capabilities={capabilities.data ?? null}
           countExisting={(path, fileTypes) => api.countExistingFiles(path, fileTypes)}
+          defaultPollIntervalSecs={defaultPollIntervalSecs}
           onPrinterChange={setCapabilityPrinter}
           onCancel={() => setDialogFor(undefined)}
           onSubmit={(result) =>

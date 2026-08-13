@@ -53,6 +53,7 @@ describe("Settings", () => {
           start_minimized: "0",
           sumatra_path: "",
           pdfium_path: "",
+          default_poll_interval_secs: "1",
           user_paused: "0",
         };
       }
@@ -187,6 +188,30 @@ describe("Settings", () => {
         key: "pdfium_path",
         value: "/Users/tim/pdfium/libpdfium.dylib",
       }),
+    );
+  });
+
+  it("saves the default poll interval on blur, floored at 1", async () => {
+    renderScreen();
+    const input = await screen.findByLabelText(
+      "Standard-Prüfintervall für neue Ordner (Sekunden)",
+    );
+    fireEvent.change(input, { target: { value: "0" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
+        key: "default_poll_interval_secs",
+        value: "1",
+      }),
+    );
+  });
+
+  it("explains the two-scan wait for the default poll interval", async () => {
+    renderScreen();
+    await waitFor(() =>
+      expect(screen.getByTestId("default-interval-hint")).toHaveTextContent(
+        "gilt erst als fertig, wenn sie sich zwei Scans lang nicht mehr ändert",
+      ),
     );
   });
 

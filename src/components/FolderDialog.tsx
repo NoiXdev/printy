@@ -48,6 +48,12 @@ export interface FolderDialogProps {
   capabilities: PrinterCapabilities | null;
   /** Injected so the dialog stays free of query wiring and easy to test. */
   countExisting: (path: string, fileTypes: string[]) => Promise<number>;
+  /**
+   * The `default_poll_interval_secs` setting, used only as the initial value
+   * of a newly created folder's own interval. Editing an existing folder
+   * never reads this -- its stored interval always wins.
+   */
+  defaultPollIntervalSecs: number;
   onPrinterChange: (printer: string) => void;
   onCancel: () => void;
   onSubmit: (result: FolderDialogResult) => void;
@@ -69,7 +75,11 @@ interface FormState {
   fitToPage: boolean;
 }
 
-function initialState(folder: WatchFolder | null, printers: PrinterInfo[]): FormState {
+function initialState(
+  folder: WatchFolder | null,
+  printers: PrinterInfo[],
+  defaultPollIntervalSecs: number,
+): FormState {
   if (folder !== null) {
     return {
       name: folder.name,
@@ -89,7 +99,7 @@ function initialState(folder: WatchFolder | null, printers: PrinterInfo[]): Form
   return {
     name: "",
     path: "",
-    pollInterval: "5",
+    pollInterval: String(defaultPollIntervalSecs),
     chipIds: ["pdf"],
     printerName: preselected,
     copies: "1",
@@ -106,13 +116,16 @@ export default function FolderDialog({
   printers,
   capabilities,
   countExisting,
+  defaultPollIntervalSecs,
   onPrinterChange,
   onCancel,
   onSubmit,
   saving = false,
 }: FolderDialogProps): JSX.Element {
   const creating = folder === null;
-  const [form, setForm] = useState<FormState>(() => initialState(folder, printers));
+  const [form, setForm] = useState<FormState>(() =>
+    initialState(folder, printers, defaultPollIntervalSecs),
+  );
   const [printExisting, setPrintExisting] = useState(false);
   const [existingCount, setExistingCount] = useState<number | null>(null);
 
