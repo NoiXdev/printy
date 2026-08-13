@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -14,6 +14,8 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   revealItemInDir: vi.fn(async () => {}),
   openUrl: vi.fn(async () => {}),
 }));
+const openMock = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: (...a: unknown[]) => openMock(...a) }));
 
 // `vi.mock` factories are hoisted above the imports, so the handles they close
 // over must be created by `vi.hoisted` rather than by a plain const.
@@ -42,6 +44,7 @@ describe("Settings", () => {
     notify.isPermissionGranted.mockReset().mockResolvedValue(true);
     notify.requestPermission.mockReset().mockResolvedValue("granted");
     invokeMock.mockReset();
+    openMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "get_settings_cmd") {
         return {
@@ -49,6 +52,7 @@ describe("Settings", () => {
           autostart: "0",
           start_minimized: "0",
           sumatra_path: "",
+          pdfium_path: "",
           user_paused: "0",
         };
       }
@@ -151,6 +155,37 @@ describe("Settings", () => {
       expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
         key: "sumatra_path",
         value: "C:\\Tools\\SumatraPDF.exe",
+      }),
+    );
+  });
+
+  it("saves the pdfium path on blur", async () => {
+    renderScreen();
+    const input = await screen.findByLabelText("pdfium-Bibliothek (optional)");
+    fireEvent.change(input, { target: { value: "C:\\Tools\\pdfium.dll" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
+        key: "pdfium_path",
+        value: "C:\\Tools\\pdfium.dll",
+      }),
+    );
+  });
+
+  it("saves the pdfium path immediately once picked from the native dialog", async () => {
+    openMock.mockResolvedValue("/Users/tim/pdfium/libpdfium.dylib");
+    renderScreen();
+    // The pdfium field is the one whose "Durchsuchen …" button sits next to
+    // its own labeled input, so scope the click to that field.
+    const pdfiumRow = (await screen.findByLabelText("pdfium-Bibliothek (optional)")).closest(
+      ".field",
+    ) as HTMLElement;
+    fireEvent.click(within(pdfiumRow).getByRole("button", { name: "Durchsuchen …" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_setting_cmd", {
+        key: "pdfium_path",
+        value: "/Users/tim/pdfium/libpdfium.dylib",
       }),
     );
   });

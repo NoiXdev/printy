@@ -29,7 +29,10 @@ use windows::Win32::Storage::Xps::{
     DC_DUPLEX, DOCINFOW, PRINTER_DEVICE_CAPABILITIES,
 };
 
-pub struct GdiBackend;
+pub struct GdiBackend {
+    /// The user's configured `pdfium_path` setting, forwarded to `rasterise`.
+    pub pdfium_path: Option<String>,
+}
 
 /// A heap buffer with 8-byte alignment. Win32 writes structures containing
 /// pointers (`PRINTER_INFO_4W`) and 4-byte scalars (`DEVMODEW`) into these
@@ -303,8 +306,13 @@ unsafe fn print_one_page(
 
 /// Runs the whole job on an open DC. Split out so the caller can delete the DC
 /// on every path, success or failure.
-unsafe fn print_on_dc(hdc: HDC, device_dpi: i32, req: &PrintRequest) -> Result<(), PrintError> {
-    let pages = rasterise(&req.file, render_dpi(device_dpi))?;
+unsafe fn print_on_dc(
+    hdc: HDC,
+    device_dpi: i32,
+    req: &PrintRequest,
+    pdfium_path: Option<&str>,
+) -> Result<(), PrintError> {
+    let pages = rasterise(&req.file, render_dpi(device_dpi), pdfium_path)?;
 
     // HORZRES/VERTRES give the printable area in device pixels, and a printer
     // DC's origin already sits at its top-left corner, so no offset correction
@@ -410,7 +418,7 @@ impl PrintBackend for GdiBackend {
         unsafe {
             let (hdc, device_dpi) = open_dc(req)?;
             // Every early return past CreateDCW must still delete the DC.
-            let result = print_on_dc(hdc, device_dpi, req);
+            let result = print_on_dc(hdc, device_dpi, req, self.pdfium_path.as_deref());
             let _ = DeleteDC(hdc);
             result
         }

@@ -55,6 +55,10 @@ pub async fn sumatra_path(db: &Db) -> Option<String> {
     get_setting(db, "sumatra_path").await.ok().flatten().filter(|s| !s.is_empty())
 }
 
+pub async fn pdfium_path(db: &Db) -> Option<String> {
+    get_setting(db, "pdfium_path").await.ok().flatten().filter(|s| !s.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +71,19 @@ mod tests {
         assert!(!user_paused(&db).await);
         assert!(!start_minimized(&db).await);
         assert!(sumatra_path(&db).await.is_none());
+        assert!(pdfium_path(&db).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pdfium_path_treats_an_empty_string_as_not_configured() {
+        let db = connect("sqlite::memory:").await.unwrap();
+        set_setting(&db, "pdfium_path", "").await.unwrap();
+        assert!(pdfium_path(&db).await.is_none());
+        set_setting(&db, "pdfium_path", "/opt/pdfium/libpdfium.dylib").await.unwrap();
+        assert_eq!(
+            pdfium_path(&db).await.as_deref(),
+            Some("/opt/pdfium/libpdfium.dylib"),
+        );
     }
 
     #[tokio::test]

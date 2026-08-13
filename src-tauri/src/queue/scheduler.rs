@@ -61,9 +61,10 @@ pub fn spawn_queue_worker(app: AppHandle) {
             }
 
             let sumatra = settings::sumatra_path(&db).await;
+            let pdfium_path = settings::pdfium_path(&db).await;
             let db_for_blocking = db.clone();
             let outcome = tokio::task::spawn_blocking(move || {
-                let b = backend(sumatra);
+                let b = backend(sumatra, pdfium_path);
                 tauri::async_runtime::block_on(run_one(&db_for_blocking, b.as_ref(), now))
             })
             .await;

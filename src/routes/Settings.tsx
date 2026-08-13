@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState, type JSX } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { appDataDir, join } from "@tauri-apps/api/path";
+import { open } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
+import { isWindows } from "../lib/platform";
 import { applyTheme, getThemeChoice, type ThemeChoice } from "../lib/theme";
 import type { NotificationMode, SettingKey } from "../lib/types";
 import "./screens.css";
+
+/** `.dll` on Windows, the two common shared-library extensions elsewhere. */
+const PDFIUM_FILTERS = [
+  { name: "pdfium", extensions: isWindows() ? ["dll"] : ["dylib", "so"] },
+];
 
 const NOTIFICATION_OPTIONS: ReadonlyArray<{ value: NotificationMode; label: string }> = [
   { value: "all", label: "Alle" },
@@ -24,6 +31,7 @@ export default function Settings(): JSX.Element {
   const qc = useQueryClient();
   const [theme, setTheme] = useState<ThemeChoice>(() => getThemeChoice());
   const [sumatra, setSumatra] = useState("");
+  const [pdfium, setPdfium] = useState("");
   const [dbPath, setDbPath] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
 
@@ -37,6 +45,13 @@ export default function Settings(): JSX.Element {
   useEffect(() => {
     if (settings.data !== undefined && !sumatraTouched.current) {
       setSumatra(settings.data.sumatra_path);
+    }
+  }, [settings.data]);
+
+  const pdfiumTouched = useRef(false);
+  useEffect(() => {
+    if (settings.data !== undefined && !pdfiumTouched.current) {
+      setPdfium(settings.data.pdfium_path);
     }
   }, [settings.data]);
 
@@ -67,6 +82,17 @@ export default function Settings(): JSX.Element {
     // database would only be a second thing to disagree with.
     applyTheme(choice);
     setTheme(choice);
+  }
+
+  /** Picking a file saves immediately -- there is no separate blur event to
+   * hang the save off, unlike the text field the user can also type into. */
+  async function browsePdfium(): Promise<void> {
+    const picked = await open({ multiple: false, filters: PDFIUM_FILTERS });
+    if (typeof picked === "string") {
+      pdfiumTouched.current = true;
+      setPdfium(picked);
+      updateSetting.mutate({ key: "pdfium_path", value: picked });
+    }
   }
 
   /**
@@ -196,6 +222,31 @@ export default function Settings(): JSX.Element {
             Nur nötig, wenn eine PDF nicht direkt gedruckt werden kann. Printy sucht
             SumatraPDF zuerst an den üblichen Installationsorten. Es wird nicht
             mitgeliefert.
+          </p>
+        </div>
+
+        <div className="field">
+          <label htmlFor="set-pdfium">pdfium-Bibliothek (optional)</label>
+          <div className="row">
+            <input
+              id="set-pdfium"
+              className="input"
+              style={{ flex: 1 }}
+              value={pdfium}
+              placeholder="C:\\Program Files\\Printy\\pdfium.dll"
+              onChange={(e) => {
+                pdfiumTouched.current = true;
+                setPdfium(e.target.value);
+              }}
+              onBlur={() => updateSetting.mutate({ key: "pdfium_path", value: pdfium })}
+            />
+            <button type="button" className="btn btn-quiet" onClick={() => void browsePdfium()}>
+              Durchsuchen …
+            </button>
+          </div>
+          <p className="helper">
+            Nur nötig, wenn Printy die pdfium-Bibliothek nicht selbst findet. Sie
+            liegt normalerweise neben der Printy-Anwendung. Wird nicht mitgeliefert.
           </p>
         </div>
 

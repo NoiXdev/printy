@@ -5,20 +5,43 @@ use crate::print::PrintError;
 use pdfium_render::prelude::*;
 use std::path::Path;
 
-/// Binds libpdfium from the candidate directories: the working directory (dev
-/// and `cargo test`), the executable's own directory, and the two macOS bundle
-/// locations. `pdfium_platform_library_name_at_path` yields the OS-correct file
-/// name (`pdfium.dll` on Windows, `libpdfium.dylib` on macOS), so no `cfg` is
-/// needed here.
-pub fn bind_pdfium() -> Result<Pdfium, PrintError> {
-    let mut dirs: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from(".")];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(d) = exe.parent() {
-            dirs.push(d.to_path_buf());
-            dirs.push(d.join("../Frameworks"));
-            dirs.push(d.join("../Resources"));
+/// Binds libpdfium, trying candidates in this order: the path the user
+/// configured in Einstellungen, the executable's own directory (how the
+/// Windows bundle ships it), the working directory (dev and `cargo test`),
+/// the two macOS bundle locations, and finally the system library.
+/// `pdfium_platform_library_name_at_path` yields the OS-correct file name
+/// (`pdfium.dll` on Windows, `libpdfium.dylib` on macOS), so no `cfg` is
+/// needed for the unconfigured candidates.
+///
+/// A configured path that fails to load never falls through to the other
+/// candidates: doing so would let a wrong setting silently pick a different
+/// binary, so the caller sees an explicit German error naming the configured
+/// path instead.
+pub fn bind_pdfium(configured: Option<&str>) -> Result<Pdfium, PrintError> {
+    if let Some(p) = configured {
+        if !p.is_empty() {
+            return Pdfium::bind_to_library(p).map(Pdfium::new).map_err(|e| {
+                PrintError::config(format!(
+                    "Konfigurierter pdfium-Pfad \"{p}\" konnte nicht geladen werden: {e}"
+                ))
+            });
         }
     }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()));
+
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(d) = &exe_dir {
+        dirs.push(d.clone());
+    }
+    dirs.push(std::path::PathBuf::from("."));
+    if let Some(d) = &exe_dir {
+        dirs.push(d.join("../Frameworks"));
+        dirs.push(d.join("../Resources"));
+    }
+
     for dir in &dirs {
         let name = Pdfium::pdfium_platform_library_name_at_path(dir);
         if let Ok(b) = Pdfium::bind_to_library(name) {
@@ -31,9 +54,14 @@ pub fn bind_pdfium() -> Result<Pdfium, PrintError> {
 }
 
 /// Rasterises every page of a PDF at `dpi`. Synchronous on purpose: `Pdfium` is
-/// not `Send`, so the handle must never cross an await point.
-pub fn render_pages(file: &Path, dpi: i32) -> Result<Vec<image::RgbImage>, PrintError> {
-    let pdfium = bind_pdfium()?;
+/// not `Send`, so the handle must never cross an await point. `configured` is
+/// the user's `pdfium_path` setting, forwarded to `bind_pdfium`.
+pub fn render_pages(
+    file: &Path,
+    dpi: i32,
+    configured: Option<&str>,
+) -> Result<Vec<image::RgbImage>, PrintError> {
+    let pdfium = bind_pdfium(configured)?;
     let doc = pdfium
         .load_pdf_from_file(file, None)
         .map_err(|e| PrintError::file(format!("PDF nicht lesbar: {e}")))?;
@@ -99,14 +127,19 @@ pub fn load_image_page(file: &Path, dpi: i32) -> Result<Vec<image::RgbImage>, Pr
 }
 
 /// Dispatches by extension. PDF and images converge on one bitmap pipeline.
-pub fn rasterise(file: &Path, dpi: i32) -> Result<Vec<image::RgbImage>, PrintError> {
+/// `configured` is the user's `pdfium_path` setting; images never need it.
+pub fn rasterise(
+    file: &Path,
+    dpi: i32,
+    configured: Option<&str>,
+) -> Result<Vec<image::RgbImage>, PrintError> {
     let ext = file
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "pdf" => render_pages(file, dpi),
+        "pdf" => render_pages(file, dpi, configured),
         "jpg" | "jpeg" | "png" | "tif" | "tiff" => load_image_page(file, dpi),
         other => Err(PrintError::file(format!(
             "Dateityp nicht unterstützt: .{other}"
@@ -157,5 +190,38 @@ mod tests {
         let img = image::RgbImage::from_pixel(1654, 1000, image::Rgb([9, 9, 9]));
         let out = clamp_image_to_dpi(img, 100);
         assert_eq!(out.dimensions(), (1654, 1000));
+    }
+
+    /// A configured path that cannot be loaded must never fall through to the
+    /// executable directory, the working directory or the system library --
+    /// that would make a wrong setting silently pick a different binary and
+    /// hide the misconfiguration from the user. The error must name the
+    /// configured path so the user knows exactly what to fix.
+    #[test]
+    fn a_configured_path_that_fails_to_load_names_itself_in_the_error() {
+        let err = bind_pdfium(Some("/nope/definitely-missing-pdfium.dylib")).unwrap_err();
+        assert!(
+            err.message.contains("/nope/definitely-missing-pdfium.dylib"),
+            "error must name the configured path: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("Konfigurierter pdfium-Pfad"),
+            "error must be in German and explicit about the source: {}",
+            err.message
+        );
+    }
+
+    /// An empty configured value (the "not configured" sentinel used by the
+    /// settings table) must be treated exactly like `None`, falling through to
+    /// the ordinary search instead of trying to load a library named "". A
+    /// test environment has no real pdfium binary, so the only thing this can
+    /// assert is that failure (the expected outcome here) never takes the
+    /// configured-path error shape.
+    #[test]
+    fn an_empty_configured_path_falls_through_to_the_normal_search() {
+        if let Err(e) = bind_pdfium(Some("")) {
+            assert!(!e.message.contains("Konfigurierter pdfium-Pfad"));
+        }
     }
 }

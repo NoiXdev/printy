@@ -8,6 +8,7 @@ const KEYS: &[(&str, &str)] = &[
     ("autostart", "0"),
     ("start_minimized", "0"),
     ("sumatra_path", ""),
+    ("pdfium_path", ""),
     ("user_paused", "0"),
 ];
 

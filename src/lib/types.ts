@@ -15,6 +15,7 @@ export type SettingKey =
   | "autostart"
   | "start_minimized"
   | "sumatra_path"
+  | "pdfium_path"
   | "user_paused";
 
 /** A row of `watch_folder`. `enabled` and `fit_to_page` are SQLite integer booleans. */

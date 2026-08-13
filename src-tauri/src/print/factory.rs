@@ -2,9 +2,10 @@ use crate::print::PrintBackend;
 
 /// Selects the platform backend. On Windows the GDI backend is primary and
 /// SumatraPDF, if installed, is consulted only for rendering failures — inside
-/// the same attempt, never for printer-level errors.
+/// the same attempt, never for printer-level errors. `pdfium_path` is the
+/// user's configured pdfium location, threaded down to the rasteriser.
 #[cfg(target_os = "windows")]
-pub fn backend(sumatra_path: Option<String>) -> Box<dyn PrintBackend> {
+pub fn backend(sumatra_path: Option<String>, pdfium_path: Option<String>) -> Box<dyn PrintBackend> {
     use crate::print::sumatra::{find_sumatra, SumatraBackend};
     use crate::print::windows_gdi::GdiBackend;
     use crate::print::{PrintError, PrintErrorKind, PrintRequest, PrinterCapabilities, PrinterInfo};
@@ -35,17 +36,17 @@ pub fn backend(sumatra_path: Option<String>) -> Box<dyn PrintBackend> {
     }
 
     Box::new(WithFallback {
-        primary: GdiBackend,
+        primary: GdiBackend { pdfium_path },
         fallback: find_sumatra(sumatra_path).map(|exe| SumatraBackend { exe }),
     })
 }
 
 #[cfg(target_os = "macos")]
-pub fn backend(_sumatra_path: Option<String>) -> Box<dyn PrintBackend> {
+pub fn backend(_sumatra_path: Option<String>, _pdfium_path: Option<String>) -> Box<dyn PrintBackend> {
     Box::new(crate::print::macos_cups::CupsBackend)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn backend(_sumatra_path: Option<String>) -> Box<dyn PrintBackend> {
+pub fn backend(_sumatra_path: Option<String>, _pdfium_path: Option<String>) -> Box<dyn PrintBackend> {
     Box::new(crate::print::fake::FakeBackend::new(&[]))
 }
