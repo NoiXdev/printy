@@ -104,6 +104,17 @@ export interface ScanAllResult {
   enqueued: number;
 }
 
+/**
+ * Result of `folder_delete_impact_cmd`: what deleting one folder would take
+ * with it, since the schema cascades the delete onto every one of its jobs.
+ */
+export interface FolderDeleteImpact {
+  /** `queued` + `retrying` + `printing`. */
+  waiting: number;
+  /** `done` + `failed`. */
+  history: number;
+}
+
 export type AppSettings = Record<SettingKey, string>;
 
 /** Payload of `printy://job`. The debug name of `queue::worker::QueueOutcome`. */

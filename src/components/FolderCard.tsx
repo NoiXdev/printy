@@ -23,6 +23,7 @@ export interface FolderCardProps {
   onScanNow: (folder: WatchFolder) => void;
   onEdit: (folder: WatchFolder) => void;
   onReveal: (folder: WatchFolder) => void;
+  onDelete: (folder: WatchFolder) => void;
 }
 
 /**
@@ -39,6 +40,7 @@ export default function FolderCard({
   onScanNow,
   onEdit,
   onReveal,
+  onDelete,
 }: FolderCardProps): JSX.Element {
   const kind = folderStatusKind(folder, queueHeld);
   const enabled = folder.enabled !== 0;
@@ -116,6 +118,13 @@ export default function FolderCard({
         </button>
         <button type="button" className="link-btn" onClick={() => onReveal(folder)}>
           Im Explorer öffnen
+        </button>
+        <button
+          type="button"
+          className="link-btn danger"
+          onClick={() => onDelete(folder)}
+        >
+          Löschen
         </button>
       </div>
     </li>

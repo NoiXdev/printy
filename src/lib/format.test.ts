@@ -5,6 +5,7 @@ import {
   fileTypeLabels,
   fileTypesFromChipIds,
   folderActivity,
+  folderDeleteWarning,
   folderStatusKind,
   folderStatusLabel,
   formatDateTime,
@@ -211,5 +212,50 @@ describe("jobOutcomeLabel", () => {
     expect(jobOutcomeLabel("printing")).toBe("Druckt");
     expect(jobOutcomeLabel("queued")).toBe("Wartet");
     expect(jobOutcomeLabel("retrying")).toBe("Wiederholt");
+  });
+});
+
+describe("folderDeleteWarning", () => {
+  it("names both counts concretely, matching the spec's own example", () => {
+    expect(folderDeleteWarning({ waiting: 3, history: 47 })).toBe(
+      "3 wartende Aufträge und 47 Einträge im Verlauf werden mitgelöscht. " +
+        "Die Dateien im überwachten Ordner selbst werden dabei nicht angetastet.",
+    );
+  });
+
+  it("uses the singular form for exactly one of each", () => {
+    const text = folderDeleteWarning({ waiting: 1, history: 1 });
+    expect(text).toContain("1 wartender Auftrag und 1 Eintrag im Verlauf werden mitgelöscht.");
+  });
+
+  it("says so plainly when both counts are zero, instead of printing zeros", () => {
+    const text = folderDeleteWarning({ waiting: 0, history: 0 });
+    expect(text).not.toContain("0 ");
+    expect(text).toContain("weder wartende Aufträge noch Einträge im Verlauf");
+  });
+
+  it("still names the non-zero side when only waiting jobs are zero", () => {
+    const text = folderDeleteWarning({ waiting: 0, history: 47 });
+    expect(text).not.toContain("0 wartende");
+    expect(text).toContain("Keine wartenden Aufträge, aber 47 Einträge im Verlauf werden mitgelöscht.");
+  });
+
+  it("still names the non-zero side when only history is zero", () => {
+    const text = folderDeleteWarning({ waiting: 3, history: 0 });
+    expect(text).not.toContain("0 Einträge");
+    expect(text).toContain("3 wartende Aufträge werden mitgelöscht, aber kein Eintrag im Verlauf.");
+  });
+
+  it("always states that the watched folder's own files are untouched", () => {
+    for (const impact of [
+      { waiting: 0, history: 0 },
+      { waiting: 3, history: 47 },
+      { waiting: 0, history: 5 },
+      { waiting: 5, history: 0 },
+    ]) {
+      expect(folderDeleteWarning(impact)).toContain(
+        "Die Dateien im überwachten Ordner selbst werden dabei nicht angetastet.",
+      );
+    }
   });
 });

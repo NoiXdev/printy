@@ -24,6 +24,12 @@
   --teal-grad: linear-gradient(150deg, #0f3d3a, #0a2826);
   /* Neutral state colour: paused folders and an idle tray. */
   --grey: #9aa3a1;
+  /* Destructive actions: a true red, deliberately distinct from the brand
+     coral used for ordinary primary buttons -- coral must never read as a
+     delete warning. */
+  --danger: #e5484d;
+  --danger-strong: #c93a3e;
+  --danger-soft: rgba(229, 72, 77, 0.14);
 
   /* Type */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;

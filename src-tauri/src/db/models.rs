@@ -26,6 +26,18 @@ impl WatchFolder {
     }
 }
 
+/// What deleting one folder would take with it, split into jobs still
+/// waiting to be printed and jobs that are already history. Powers the
+/// concrete wording of the delete confirmation prompt -- see
+/// `db::jobs::count_delete_impact`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderDeleteImpact {
+    /// `queued` + `retrying` + `printing`.
+    pub waiting: i64,
+    /// `done` + `failed`.
+    pub history: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PrintJob {
     pub id: i64,

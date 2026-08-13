@@ -75,6 +75,7 @@ pub fn run() {
             commands::folders::create_folder_cmd,
             commands::folders::update_folder_cmd,
             commands::folders::delete_folder_cmd,
+            commands::folders::folder_delete_impact_cmd,
             commands::folders::set_folder_enabled_cmd,
             commands::folders::scan_now_cmd,
             commands::folders::scan_all_folders_cmd,

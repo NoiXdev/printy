@@ -1,4 +1,4 @@
-use crate::db::models::PrintJob;
+use crate::db::models::{FolderDeleteImpact, PrintJob};
 use crate::db::Db;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +176,36 @@ pub async fn update_waiting_jobs_for_folder(
     .execute(db)
     .await?;
     Ok(r.rows_affected())
+}
+
+/// Splits one folder's jobs into "still waiting" and "history", so a folder
+/// delete confirmation can name concretely what a cascade delete takes with
+/// it instead of just warning in the abstract. Deliberately two scalar
+/// queries rather than one grouped query: each half maps to a fixed, known
+/// set of states, and that is clearer to read (and to keep in sync with
+/// `JobState`) than reducing a `GROUP BY state` result set back down to two
+/// buckets.
+pub async fn count_delete_impact(
+    db: &Db,
+    folder_id: i64,
+) -> Result<FolderDeleteImpact, sqlx::Error> {
+    let waiting: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM print_job
+         WHERE folder_id = ? AND state IN ('queued', 'retrying', 'printing')",
+    )
+    .bind(folder_id)
+    .fetch_one(db)
+    .await?;
+
+    let history: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM print_job
+         WHERE folder_id = ? AND state IN ('done', 'failed')",
+    )
+    .bind(folder_id)
+    .fetch_one(db)
+    .await?;
+
+    Ok(FolderDeleteImpact { waiting, history })
 }
 
 pub async fn list_jobs(
@@ -376,6 +406,70 @@ mod tests {
         assert_eq!(still_retrying.state, JobState::Retrying.as_str());
         let still_done = get_job(&db, done_one.id).await.unwrap().unwrap();
         assert_eq!(still_done.state, JobState::Done.as_str());
+    }
+
+    #[tokio::test]
+    async fn count_delete_impact_splits_waiting_from_history() {
+        let (db, fid) = setup().await;
+
+        // One job in each of the five states, all present at once.
+        enqueue_job(&db, &job(fid, "queued.pdf", "h1")).await.unwrap();
+
+        let printing = enqueue_job(&db, &job(fid, "printing.pdf", "h2")).await.unwrap();
+        mark_printing(&db, printing.id).await.unwrap();
+
+        let retrying = enqueue_job(&db, &job(fid, "retrying.pdf", "h3")).await.unwrap();
+        mark_printing(&db, retrying.id).await.unwrap();
+        mark_retrying(&db, retrying.id, "file", "kaputt", 10_000).await.unwrap();
+
+        let done = enqueue_job(&db, &job(fid, "done.pdf", "h4")).await.unwrap();
+        mark_printing(&db, done.id).await.unwrap();
+        mark_done(&db, done.id).await.unwrap();
+
+        let failed = enqueue_job(&db, &job(fid, "failed.pdf", "h5")).await.unwrap();
+        mark_failed(&db, failed.id, "file", "kaputt").await.unwrap();
+
+        let impact = count_delete_impact(&db, fid).await.unwrap();
+        // queued + printing + retrying = 3; done + failed = 2.
+        assert_eq!(impact.waiting, 3);
+        assert_eq!(impact.history, 2);
+    }
+
+    #[tokio::test]
+    async fn count_delete_impact_is_zero_for_a_folder_without_jobs() {
+        let (db, fid) = setup().await;
+        let impact = count_delete_impact(&db, fid).await.unwrap();
+        assert_eq!(impact.waiting, 0);
+        assert_eq!(impact.history, 0);
+    }
+
+    #[tokio::test]
+    async fn count_delete_impact_only_counts_the_given_folder() {
+        let (db, fid) = setup().await;
+        let other = create_folder(
+            &db,
+            &NewFolder {
+                name: "Other".into(),
+                path: "/tmp/other".into(),
+                poll_interval_secs: 5,
+                file_types: vec!["pdf".into()],
+                printer_name: "P".into(),
+                copies: 1,
+                duplex: "simplex".into(),
+                color_mode: "mono".into(),
+                post_action: "move".into(),
+                fit_to_page: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        enqueue_job(&db, &job(fid, "mine.pdf", "h1")).await.unwrap();
+        enqueue_job(&db, &job(other.id, "theirs.pdf", "h2")).await.unwrap();
+
+        let impact = count_delete_impact(&db, fid).await.unwrap();
+        assert_eq!(impact.waiting, 1);
+        assert_eq!(impact.history, 0);
     }
 
     #[tokio::test]

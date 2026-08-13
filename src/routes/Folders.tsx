@@ -4,8 +4,9 @@ import { useNavigate } from "react-router-dom";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
 import { onFolderEvent, onJobEvent, onPausedEvent, onQueueEvent } from "../lib/events";
-import { folderActivity } from "../lib/format";
+import { folderActivity, folderDeleteWarning } from "../lib/format";
 import type { WatchFolder } from "../lib/types";
+import ConfirmDialog from "../components/ConfirmDialog";
 import FolderCard from "../components/FolderCard";
 import "./screens.css";
 
@@ -18,6 +19,7 @@ export default function Folders(): JSX.Element {
   const [holdReason, setHoldReason] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [rescanMessage, setRescanMessage] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<WatchFolder | null>(null);
 
   const folders = useQuery({ queryKey: ["folders"], queryFn: api.listFolders });
   const jobs = useQuery({
@@ -79,6 +81,32 @@ export default function Folders(): JSX.Element {
     mutationFn: (folder: WatchFolder) => api.scanNow(folder.id),
     onSuccess: invalidateAll,
   });
+
+  // Fetched fresh every time the delete dialog opens for a folder, never
+  // cached alongside it -- the counts must reflect the queue at the moment of
+  // the click, not whatever was last rendered.
+  const deleteImpact = useMutation({
+    mutationFn: (folder: WatchFolder) => api.folderDeleteImpact(folder.id),
+  });
+
+  const deleteFolder = useMutation({
+    mutationFn: (folder: WatchFolder) => api.deleteFolder(folder.id),
+    onSuccess: () => {
+      invalidateAll();
+      setDeleteTarget(null);
+      deleteImpact.reset();
+    },
+  });
+
+  function requestDelete(folder: WatchFolder): void {
+    setDeleteTarget(folder);
+    deleteImpact.mutate(folder);
+  }
+
+  function cancelDelete(): void {
+    setDeleteTarget(null);
+    deleteImpact.reset();
+  }
 
   const scanAllFolders = useMutation({
     mutationFn: () => api.scanAllFolders(),
@@ -162,6 +190,7 @@ export default function Folders(): JSX.Element {
               onScanNow={(folder) => scanNow.mutate(folder)}
               onEdit={(folder) => navigate(`/ordner/${folder.id}`)}
               onReveal={(folder) => void revealItemInDir(folder.path)}
+              onDelete={requestDelete}
             />
           ))}
         </ul>
@@ -183,6 +212,22 @@ export default function Folders(): JSX.Element {
       >
         <span aria-hidden="true">+ </span>Ordner hinzufügen
       </button>
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`„${deleteTarget.name}“ löschen?`}
+          message={
+            deleteImpact.data
+              ? folderDeleteWarning(deleteImpact.data)
+              : "Ermittle betroffene Aufträge …"
+          }
+          confirmLabel="Endgültig löschen"
+          destructive
+          pending={deleteFolder.isPending || deleteImpact.isPending}
+          onConfirm={() => deleteFolder.mutate(deleteTarget)}
+          onCancel={cancelDelete}
+        />
+      )}
     </section>
   );
 }

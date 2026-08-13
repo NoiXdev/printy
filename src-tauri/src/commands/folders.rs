@@ -1,5 +1,6 @@
 use crate::db::folders::{self, NewFolder};
-use crate::db::models::WatchFolder;
+use crate::db::jobs;
+use crate::db::models::{FolderDeleteImpact, WatchFolder};
 use crate::watcher::tick::{
     mark_existing_as_seen, scan_all_enabled, scan_now, ScanAllResult, SCAN_NOW_STABILITY_DELAY,
 };
@@ -38,6 +39,18 @@ pub async fn update_folder_cmd(
 #[tauri::command]
 pub async fn delete_folder_cmd(state: State<'_, AppState>, id: i64) -> AppResult<()> {
     Ok(folders::delete_folder(&state.db, id).await?)
+}
+
+/// Backs the delete confirmation prompt: the schema cascades a folder delete
+/// onto every one of its jobs, so the user needs to be told concretely what
+/// that takes with it -- both what is still waiting and what is only history
+/// -- before they commit to it.
+#[tauri::command]
+pub async fn folder_delete_impact_cmd(
+    state: State<'_, AppState>,
+    id: i64,
+) -> AppResult<FolderDeleteImpact> {
+    Ok(jobs::count_delete_impact(&state.db, id).await?)
 }
 
 #[tauri::command]

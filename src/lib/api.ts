@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   AppStatus,
+  FolderDeleteImpact,
   NewFolder,
   PrintJob,
   PrinterCapabilities,
@@ -27,6 +28,8 @@ export const api = {
   updateFolder: (id: number, folder: NewFolder) =>
     invoke<WatchFolder>("update_folder_cmd", { id, folder }),
   deleteFolder: (id: number) => invoke<void>("delete_folder_cmd", { id }),
+  folderDeleteImpact: (id: number) =>
+    invoke<FolderDeleteImpact>("folder_delete_impact_cmd", { id }),
   setFolderEnabled: (id: number, enabled: boolean) =>
     invoke<void>("set_folder_enabled_cmd", { id, enabled }),
   scanNow: (id: number) => invoke<number>("scan_now_cmd", { id }),

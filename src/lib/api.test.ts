@@ -56,6 +56,9 @@ describe("api", () => {
 
     await api.deleteFolder(7);
     expect(invokeMock).toHaveBeenCalledWith("delete_folder_cmd", { id: 7 });
+
+    await api.folderDeleteImpact(7);
+    expect(invokeMock).toHaveBeenCalledWith("folder_delete_impact_cmd", { id: 7 });
   });
 
   it("calls the job commands", async () => {

@@ -1,4 +1,4 @@
-import type { JobState, PrintJob, WatchFolder } from "./types";
+import type { FolderDeleteImpact, JobState, PrintJob, WatchFolder } from "./types";
 
 export interface FileTypeChip {
   id: string;
@@ -120,6 +120,37 @@ export function settingsSummary(folder: WatchFolder): string {
     COLOR_LABEL[folder.color_mode],
     POST_ACTION_LABEL[folder.post_action],
   ].join(" · ");
+}
+
+/**
+ * The database cascades a folder delete onto every one of its jobs. This
+ * builds the confirmation prompt's body: it names the two counts concretely
+ * (never a bare "0 wartende Aufträge" when the honest statement is that there
+ * simply is nothing) and always reassures that the watched folder's own files
+ * are untouched -- the reassurance a cautious user needs before they click.
+ */
+export function folderDeleteWarning(impact: FolderDeleteImpact): string {
+  const { waiting, history } = impact;
+  const untouched =
+    "Die Dateien im überwachten Ordner selbst werden dabei nicht angetastet.";
+
+  if (waiting === 0 && history === 0) {
+    return (
+      "Für diesen Ordner gibt es weder wartende Aufträge noch Einträge im Verlauf " +
+      `– es wird nichts mitgelöscht. ${untouched}`
+    );
+  }
+
+  const waitingText = waiting === 1 ? "1 wartender Auftrag" : `${waiting} wartende Aufträge`;
+  const historyText = history === 1 ? "1 Eintrag im Verlauf" : `${history} Einträge im Verlauf`;
+
+  if (waiting === 0) {
+    return `Keine wartenden Aufträge, aber ${historyText} werden mitgelöscht. ${untouched}`;
+  }
+  if (history === 0) {
+    return `${waitingText} werden mitgelöscht, aber kein Eintrag im Verlauf. ${untouched}`;
+  }
+  return `${waitingText} und ${historyText} werden mitgelöscht. ${untouched}`;
 }
 
 export interface FolderActivity {

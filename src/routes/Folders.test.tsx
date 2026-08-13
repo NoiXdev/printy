@@ -67,9 +67,12 @@ function respond(cmd: string, args?: Record<string, unknown>): unknown {
     case "set_global_paused_cmd":
     case "set_folder_enabled_cmd":
     case "scan_now_cmd":
+    case "delete_folder_cmd":
       return undefined;
     case "scan_all_folders_cmd":
       return { folders_scanned: 3, enqueued: 7 };
+    case "folder_delete_impact_cmd":
+      return { waiting: 3, history: 47 };
     default:
       throw new Error(`unexpected command ${cmd} ${JSON.stringify(args)}`);
   }
@@ -177,5 +180,45 @@ describe("Folders", () => {
       ),
     );
     expect(button).not.toBeDisabled();
+  });
+
+  it("asks for the impact counts and shows them concretely before deleting", async () => {
+    renderScreen();
+    fireEvent.click(await screen.findByRole("button", { name: "Löschen" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("folder_delete_impact_cmd", { id: 1 }),
+    );
+    expect(
+      await screen.findByText(
+        "3 wartende Aufträge und 47 Einträge im Verlauf werden mitgelöscht. " +
+          "Die Dateien im überwachten Ordner selbst werden dabei nicht angetastet.",
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_folder_cmd", expect.anything());
+  });
+
+  it("cancelling the delete dialog never calls delete_folder_cmd", async () => {
+    renderScreen();
+    fireEvent.click(await screen.findByRole("button", { name: "Löschen" }));
+    await screen.findByRole("alertdialog");
+
+    fireEvent.click(screen.getByRole("button", { name: "Abbrechen" }));
+
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_folder_cmd", expect.anything());
+  });
+
+  it("confirming the delete dialog calls delete_folder_cmd for the right folder", async () => {
+    renderScreen();
+    fireEvent.click(await screen.findByRole("button", { name: "Löschen" }));
+    await screen.findByRole("alertdialog");
+
+    fireEvent.click(screen.getByRole("button", { name: "Endgültig löschen" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("delete_folder_cmd", { id: 1 }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
   });
 });

@@ -45,6 +45,7 @@ function renderCard(props: Partial<ComponentProps<typeof FolderCard>> = {}) {
     onScanNow: vi.fn(),
     onEdit: vi.fn(),
     onReveal: vi.fn(),
+    onDelete: vi.fn(),
   };
   render(
     <FolderCard
@@ -141,6 +142,14 @@ describe("FolderCard actions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Im Explorer öffnen" }));
     expect(h.onReveal).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Löschen" }));
+    expect(h.onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("styles the delete action as destructive", () => {
+    renderCard();
+    expect(screen.getByRole("button", { name: "Löschen" })).toHaveClass("danger");
   });
 
   it("offers resuming instead of pausing on a disabled folder", () => {
