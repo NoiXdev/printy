@@ -5,6 +5,13 @@ use crate::intake::post::PostAction;
 use crate::intake::scan::scan_folder;
 use crate::intake::stability::{is_readable, stamp, StabilityTracker};
 use std::path::Path;
+use std::time::Duration;
+
+/// The real-world delay `scan_now` waits out between its two observations.
+/// Anything shorter defeats the stability check: two stamps taken
+/// microseconds apart are trivially identical even for a file still being
+/// written.
+pub const SCAN_NOW_STABILITY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickReport {
@@ -84,6 +91,22 @@ pub async fn tick_folder(
         report.enqueued += 1;
     }
     Ok(report)
+}
+
+/// An on-demand scan of one folder: two observations separated by `delay` on
+/// a fresh tracker, so a file that is still being written genuinely fails the
+/// stability check instead of being compared against itself microseconds
+/// later. Callers pass `SCAN_NOW_STABILITY_DELAY`; tests pass something much
+/// shorter so they do not have to sleep for real.
+pub async fn scan_now(
+    db: &Db,
+    folder: &WatchFolder,
+    delay: Duration,
+) -> Result<TickReport, sqlx::Error> {
+    let mut tracker = StabilityTracker::new();
+    tick_folder(db, folder, &mut tracker).await?;
+    tokio::time::sleep(delay).await;
+    tick_folder(db, folder, &mut tracker).await
 }
 
 /// Records everything currently in the folder as already handled, without
@@ -415,6 +438,50 @@ mod tests {
         let jobs = list_jobs(&db, false, 10).await.unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].fit_to_page, 0);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A file that grows in the window between `scan_now`'s two observations
+    /// must not be enqueued. A background task performs the growth after a
+    /// short sleep so this proves real separation in time rather than two
+    /// stamps compared microseconds apart -- while still running in
+    /// milliseconds instead of the production ~1s delay.
+    #[tokio::test]
+    async fn scan_now_rejects_a_file_that_grows_between_observations() {
+        let d = temp("scan_now_growing");
+        let (db, fid) = setup(&d, "move").await;
+        let folder = crate::db::folders::get_folder(&db, fid).await.unwrap().unwrap();
+        let path = d.join("a.pdf");
+        fs::write(&path, b"short").unwrap();
+
+        let growth_path = path.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            fs::write(&growth_path, b"this file grew a lot between observations").unwrap();
+        });
+
+        let report = scan_now(&db, &folder, Duration::from_millis(50)).await.unwrap();
+        assert_eq!(
+            report.enqueued, 0,
+            "a file that grew between the two observations must not be enqueued"
+        );
+        assert_eq!(list_jobs(&db, false, 10).await.unwrap().len(), 0);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// The mirror case: a file that does not change between the two
+    /// observations must be enqueued, proving `scan_now` still does its job
+    /// once real separation in time is introduced.
+    #[tokio::test]
+    async fn scan_now_enqueues_a_file_that_stays_stable() {
+        let d = temp("scan_now_stable");
+        let (db, fid) = setup(&d, "move").await;
+        let folder = crate::db::folders::get_folder(&db, fid).await.unwrap().unwrap();
+        fs::write(d.join("a.pdf"), b"payload").unwrap();
+
+        let report = scan_now(&db, &folder, Duration::from_millis(10)).await.unwrap();
+        assert_eq!(report.enqueued, 1);
+        assert_eq!(list_jobs(&db, false, 10).await.unwrap().len(), 1);
         let _ = fs::remove_dir_all(&d);
     }
 }

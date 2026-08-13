@@ -1,7 +1,6 @@
 use crate::db::folders::{self, NewFolder};
 use crate::db::models::WatchFolder;
-use crate::intake::stability::StabilityTracker;
-use crate::watcher::tick::{mark_existing_as_seen, tick_folder};
+use crate::watcher::tick::{mark_existing_as_seen, scan_now, SCAN_NOW_STABILITY_DELAY};
 use crate::{error::AppResult, AppState};
 use tauri::State;
 
@@ -48,15 +47,16 @@ pub async fn set_folder_enabled_cmd(
     Ok(folders::set_folder_enabled(&state.db, id, enabled).await?)
 }
 
-/// Runs two ticks back to back so a settled file is picked up immediately
-/// rather than waiting for the next interval.
+/// Runs two observations, separated by `SCAN_NOW_STABILITY_DELAY`, so a
+/// settled file is picked up immediately rather than waiting for the next
+/// interval -- without bypassing the stability check that protects a file
+/// still being written.
 #[tauri::command]
 pub async fn scan_now_cmd(state: State<'_, AppState>, id: i64) -> AppResult<usize> {
     let Some(folder) = folders::get_folder(&state.db, id).await? else {
         return Err(crate::error::AppError::Other("Ordner nicht gefunden".into()));
     };
-    let mut tracker = StabilityTracker::new();
-    tick_folder(&state.db, &folder, &mut tracker).await?;
-    let report = tick_folder(&state.db, &folder, &mut tracker).await?;
+    let db = state.db.clone();
+    let report = scan_now(&db, &folder, SCAN_NOW_STABILITY_DELAY).await?;
     Ok(report.enqueued)
 }
