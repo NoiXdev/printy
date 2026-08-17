@@ -110,4 +110,26 @@ describe("api", () => {
     await api.setAutostart(true);
     expect(invokeMock).toHaveBeenCalledWith("set_autostart_cmd", { enabled: true });
   });
+
+  it("calls the config transfer and file I/O commands", async () => {
+    await api.exportConfig();
+    expect(invokeMock).toHaveBeenCalledWith("export_config_cmd");
+
+    await api.importConfig("{\"schema_version\":1}", "merge");
+    expect(invokeMock).toHaveBeenCalledWith("import_config_cmd", {
+      json: "{\"schema_version\":1}",
+      mode: "merge",
+    });
+
+    await api.writeTextFile("/tmp/printy-konfiguration.json", "{}");
+    expect(invokeMock).toHaveBeenCalledWith("write_text_file_cmd", {
+      path: "/tmp/printy-konfiguration.json",
+      contents: "{}",
+    });
+
+    await api.readTextFile("/tmp/printy-konfiguration.json");
+    expect(invokeMock).toHaveBeenCalledWith("read_text_file_cmd", {
+      path: "/tmp/printy-konfiguration.json",
+    });
+  });
 });

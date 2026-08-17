@@ -50,6 +50,28 @@ pub async fn set_autostart_cmd(
     Ok(())
 }
 
+/// Writes UTF-8 text to a path the user already chose through the native
+/// save dialog. The dialog plugin only returns a path -- it does not write --
+/// so this is the write half of that split, used by the config-export flow.
+#[tauri::command]
+pub async fn write_text_file_cmd(path: String, contents: String) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || std::fs::write(&path, contents))
+        .await
+        .map_err(|e| AppError::Other(format!("Datei schreiben: {e}")))??;
+    Ok(())
+}
+
+/// Reads UTF-8 text from a path the user already chose through the native
+/// open dialog. Counterpart of `write_text_file_cmd`, used by the
+/// config-import flow to load a file before it is parsed and confirmed.
+#[tauri::command]
+pub async fn read_text_file_cmd(path: String) -> AppResult<String> {
+    let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path))
+        .await
+        .map_err(|e| AppError::Other(format!("Datei lesen: {e}")))??;
+    Ok(content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +126,27 @@ mod tests {
         let missing = std::env::temp_dir().join("printy-does-not-exist-9999");
         let types = vec!["pdf".to_string()];
         assert_eq!(count_existing(missing.to_str().unwrap(), &types).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn write_then_read_round_trips_the_exact_content() {
+        let dir = temp_dir("write-read-roundtrip");
+        let path = dir.join("printy-konfiguration.json").to_str().unwrap().to_string();
+
+        write_text_file_cmd(path.clone(), "{\"schema_version\":1}".into()).await.unwrap();
+        let read_back = read_text_file_cmd(path).await.unwrap();
+        assert_eq!(read_back, "{\"schema_version\":1}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn reading_a_missing_file_is_a_clean_error_not_a_panic() {
+        let missing = std::env::temp_dir()
+            .join("printy-config-does-not-exist-9999.json")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(read_text_file_cmd(missing).await.is_err());
     }
 }

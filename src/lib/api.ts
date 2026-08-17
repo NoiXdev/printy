@@ -3,6 +3,8 @@ import type {
   AppSettings,
   AppStatus,
   FolderDeleteImpact,
+  ImportMode,
+  ImportReport,
   NewFolder,
   PrintJob,
   PrinterCapabilities,
@@ -49,4 +51,11 @@ export const api = {
     invoke<number>("count_existing_files_cmd", { path, fileTypes }),
   getAutostart: () => invoke<boolean>("get_autostart_cmd"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart_cmd", { enabled }),
+
+  exportConfig: () => invoke<string>("export_config_cmd"),
+  importConfig: (json: string, mode: ImportMode) =>
+    invoke<ImportReport>("import_config_cmd", { json, mode }),
+  writeTextFile: (path: string, contents: string) =>
+    invoke<void>("write_text_file_cmd", { path, contents }),
+  readTextFile: (path: string) => invoke<string>("read_text_file_cmd", { path }),
 };

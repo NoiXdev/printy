@@ -1,4 +1,5 @@
 mod commands;
+mod config;
 mod db;
 mod error;
 mod intake;
@@ -71,6 +72,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::config::export_config_cmd,
+            commands::config::import_config_cmd,
             commands::folders::list_folders_cmd,
             commands::folders::create_folder_cmd,
             commands::folders::update_folder_cmd,
@@ -90,6 +93,8 @@ pub fn run() {
             commands::shell::count_existing_files_cmd,
             commands::shell::get_autostart_cmd,
             commands::shell::set_autostart_cmd,
+            commands::shell::write_text_file_cmd,
+            commands::shell::read_text_file_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

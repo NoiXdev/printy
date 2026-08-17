@@ -117,6 +117,48 @@ export interface FolderDeleteImpact {
 
 export type AppSettings = Record<SettingKey, string>;
 
+/**
+ * `merge` matches existing folders by `path` and updates them, leaving
+ * unknown local folders alone. `replace` deletes every existing folder first,
+ * then inserts everything from the file -- destructive, and must be
+ * confirmed concretely before it runs.
+ */
+export type ImportMode = "merge" | "replace";
+
+/** Why `import_config_cmd` force-disabled a folder. Both can be true at once. */
+export interface DisabledReason {
+  path_missing: boolean;
+  printer_missing: boolean;
+}
+
+export type FolderImportAction = "created" | "updated";
+
+/** One folder's outcome from `import_config_cmd`, per the per-folder report the UI must show. */
+export interface FolderImportOutcome {
+  name: string;
+  path: string;
+  action: FolderImportAction;
+  enabled: boolean;
+  /**
+   * Set only when the safety net forced `enabled = false` (missing path
+   * and/or missing printer on this machine) -- never just because the
+   * folder arrived disabled from the source machine by choice. This is the
+   * list the UI must show prominently: it is what the user has to fix.
+   */
+  disabled_reason: DisabledReason | null;
+}
+
+/** Result of `import_config_cmd`. */
+export interface ImportReport {
+  mode: ImportMode;
+  total_folders: number;
+  created: number;
+  updated: number;
+  disabled: number;
+  settings_applied: number;
+  folders: FolderImportOutcome[];
+}
+
 /** Payload of `printy://job`. The debug name of `queue::worker::QueueOutcome`. */
 export type JobOutcome = "Printed" | "Retried" | "Failed";
 export interface JobEvent {
