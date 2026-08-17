@@ -1,4 +1,4 @@
-import type { FolderDeleteImpact, JobState, PrintJob, WatchFolder } from "./types";
+import type { DisabledReason, FolderDeleteImpact, JobState, PrintJob, WatchFolder } from "./types";
 
 export interface FileTypeChip {
   id: string;
@@ -238,4 +238,55 @@ const JOB_STATE_LABEL: Record<JobState, string> = {
 
 export function jobOutcomeLabel(state: JobState): string {
   return JOB_STATE_LABEL[state];
+}
+
+/** Names the concrete reason `import_config_cmd` force-disabled a folder. */
+export function disabledReasonText(reason: DisabledReason): string {
+  if (reason.path_missing && reason.printer_missing) {
+    return "Ordnerpfad nicht gefunden und Drucker nicht installiert.";
+  }
+  if (reason.path_missing) return "Ordnerpfad auf diesem Rechner nicht gefunden.";
+  return "Drucker auf diesem Rechner nicht installiert.";
+}
+
+/** Aggregate impact of "Alles ersetzen": every existing folder, and what it takes with it. */
+export interface ReplaceAllImpact {
+  folders: number;
+  waiting: number;
+  history: number;
+}
+
+/**
+ * Builds the destructive confirmation for replace-mode import, with the same
+ * honesty as `folderDeleteWarning`: concrete counts, never a bare zero, and
+ * an explicit reassurance that the watched folders' own files are untouched.
+ */
+export function replaceAllWarning(impact: ReplaceAllImpact): string {
+  const { folders, waiting, history } = impact;
+  const untouched =
+    "Die Dateien in den überwachten Ordnern selbst werden dabei nicht angetastet.";
+
+  if (folders === 0) {
+    return (
+      "Es gibt noch keinen bestehenden Ordner – „Alles ersetzen“ hat daher keine Auswirkung " +
+      `auf vorhandene Daten. ${untouched}`
+    );
+  }
+
+  const folderText =
+    folders === 1 ? "1 bestehender Ordner wird" : `${folders} bestehende Ordner werden`;
+  const waitingText = waiting === 1 ? "1 wartender Auftrag" : `${waiting} wartende Aufträge`;
+  const historyText = history === 1 ? "1 Eintrag im Verlauf" : `${history} Einträge im Verlauf`;
+  const replaced = `${folderText} gelöscht und durch die Ordner aus der Datei ersetzt`;
+
+  if (waiting === 0 && history === 0) {
+    return `${replaced}, ohne wartende Aufträge oder Einträge im Verlauf mitzunehmen. ${untouched}`;
+  }
+  if (waiting === 0) {
+    return `${replaced}, mitsamt ${historyText}, aber ohne wartende Aufträge. ${untouched}`;
+  }
+  if (history === 0) {
+    return `${replaced}, mitsamt ${waitingText}, aber ohne Einträge im Verlauf. ${untouched}`;
+  }
+  return `${replaced}, mitsamt ${waitingText} und ${historyText}. ${untouched}`;
 }

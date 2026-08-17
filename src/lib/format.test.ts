@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   chipIdsFromFileTypes,
   countdownSeconds,
+  disabledReasonText,
   fileTypeLabels,
   fileTypesFromChipIds,
   folderActivity,
@@ -12,6 +13,7 @@ import {
   jobOutcomeLabel,
   parseDbTimestamp,
   parseFileTypes,
+  replaceAllWarning,
   settingsSummary,
   stabilityHint,
 } from "./format";
@@ -257,5 +259,52 @@ describe("folderDeleteWarning", () => {
         "Die Dateien im überwachten Ordner selbst werden dabei nicht angetastet.",
       );
     }
+  });
+});
+
+describe("disabledReasonText", () => {
+  it("names a missing path", () => {
+    expect(disabledReasonText({ path_missing: true, printer_missing: false })).toBe(
+      "Ordnerpfad auf diesem Rechner nicht gefunden.",
+    );
+  });
+
+  it("names a missing printer", () => {
+    expect(disabledReasonText({ path_missing: false, printer_missing: true })).toBe(
+      "Drucker auf diesem Rechner nicht installiert.",
+    );
+  });
+
+  it("names both when both are missing", () => {
+    const text = disabledReasonText({ path_missing: true, printer_missing: true });
+    expect(text).toContain("Ordnerpfad");
+    expect(text).toContain("Drucker");
+  });
+});
+
+describe("replaceAllWarning", () => {
+  it("says plainly that nothing existing is affected when there are no folders yet", () => {
+    const text = replaceAllWarning({ folders: 0, waiting: 0, history: 0 });
+    expect(text).toContain("keine Auswirkung auf vorhandene Daten");
+  });
+
+  it("names all three counts concretely for the general case", () => {
+    const text = replaceAllWarning({ folders: 4, waiting: 3, history: 47 });
+    expect(text).toContain("4 bestehende Ordner");
+    expect(text).toContain("3 wartende Aufträge");
+    expect(text).toContain("47 Einträge im Verlauf");
+  });
+
+  it("uses singular forms for exactly one of each", () => {
+    const text = replaceAllWarning({ folders: 1, waiting: 1, history: 1 });
+    expect(text).toContain("1 bestehender Ordner");
+    expect(text).toContain("1 wartender Auftrag");
+    expect(text).toContain("1 Eintrag im Verlauf");
+  });
+
+  it("always reassures that the watched folders' own files are untouched", () => {
+    expect(replaceAllWarning({ folders: 2, waiting: 0, history: 0 })).toContain(
+      "Die Dateien in den überwachten Ordnern selbst werden dabei nicht angetastet.",
+    );
   });
 });

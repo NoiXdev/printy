@@ -1,15 +1,22 @@
 import { useEffect, useRef, useState, type JSX } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { appDataDir, join } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
-import { stabilityHint } from "../lib/format";
+import { disabledReasonText, replaceAllWarning, stabilityHint } from "../lib/format";
 import { isWindows } from "../lib/platform";
 import { applyTheme, getThemeChoice, type ThemeChoice } from "../lib/theme";
-import type { NotificationMode, SettingKey } from "../lib/types";
+import type { ImportMode, ImportReport, NotificationMode, SettingKey } from "../lib/types";
 import "./screens.css";
+
+/** State of the picked-but-not-yet-imported file, driving the confirmation dialog. */
+interface PendingImport {
+  path: string;
+  json: string;
+  mode: ImportMode;
+}
 
 /** `.dll` on Windows, the two common shared-library extensions elsewhere. */
 const PDFIUM_FILTERS = [
@@ -36,9 +43,16 @@ export default function Settings(): JSX.Element {
   const [defaultInterval, setDefaultInterval] = useState("1");
   const [dbPath, setDbPath] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [importReport, setImportReport] = useState<ImportReport | null>(null);
 
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const autostart = useQuery({ queryKey: ["autostart"], queryFn: api.getAutostart });
+  // Only needed to size the "Alles ersetzen" warning -- the same folder list
+  // every other screen already caches under this query key.
+  const folders = useQuery({ queryKey: ["folders"], queryFn: api.listFolders });
 
   // Guards against the settings fetch resolving after the user has already
   // started typing: once the field is touched, a late arrival (or a refetch
@@ -82,6 +96,36 @@ export default function Settings(): JSX.Element {
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["autostart"] }),
   });
 
+  // Fetched fresh every time "Alles ersetzen" is picked, reusing the same
+  // per-folder delete-impact command the folder delete confirmation already
+  // uses -- just summed across every existing folder, since replace mode
+  // deletes all of them before re-inserting from the file.
+  const replaceImpact = useMutation({
+    mutationFn: async () => {
+      const list = folders.data ?? [];
+      const impacts = await Promise.all(list.map((f) => api.folderDeleteImpact(f.id)));
+      return {
+        folders: list.length,
+        waiting: impacts.reduce((sum, i) => sum + i.waiting, 0),
+        history: impacts.reduce((sum, i) => sum + i.history, 0),
+      };
+    },
+  });
+
+  const importConfig = useMutation({
+    mutationFn: (vars: PendingImport) => api.importConfig(vars.json, vars.mode),
+    onSuccess: (report) => {
+      setImportReport(report);
+      setPendingImport(null);
+      replaceImpact.reset();
+      void qc.invalidateQueries({ queryKey: ["folders"] });
+      void qc.invalidateQueries({ queryKey: ["jobs"] });
+      void qc.invalidateQueries({ queryKey: ["status"] });
+      void qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e) => setConfigError(String(e)),
+  });
+
   const notificationMode = (settings.data?.notification_mode ?? "all") as NotificationMode;
   const startMinimized = settings.data?.start_minimized === "1";
   const intervalSecs = Math.max(1, Number.parseInt(defaultInterval, 10) || 1);
@@ -103,6 +147,59 @@ export default function Settings(): JSX.Element {
       setPdfium(picked);
       updateSetting.mutate({ key: "pdfium_path", value: picked });
     }
+  }
+
+  /**
+   * The save dialog gets the destination path; `export_config_cmd` builds the
+   * JSON; `write_text_file_cmd` does the actual write. The dialog plugin
+   * itself never touches file content, only paths -- same split already used
+   * for folder picking.
+   */
+  async function handleExport(): Promise<void> {
+    setConfigError(null);
+    setExportMessage(null);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const path = await save({
+      defaultPath: `printy-konfiguration-${dateStr}.json`,
+      filters: [{ name: "Konfiguration", extensions: ["json"] }],
+    });
+    if (path === null) return;
+    try {
+      const json = await api.exportConfig();
+      await api.writeTextFile(path, json);
+      setExportMessage(`Konfiguration gespeichert unter ${path}`);
+    } catch (e) {
+      setConfigError(String(e));
+    }
+  }
+
+  /** Reads the picked file so the confirmation dialog can be shown; nothing
+   * is imported until that confirmation is accepted. */
+  async function handleImportPick(): Promise<void> {
+    setConfigError(null);
+    setImportReport(null);
+    const path = await open({
+      multiple: false,
+      filters: [{ name: "Konfiguration", extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const json = await api.readTextFile(path);
+      setPendingImport({ path, json, mode: "merge" });
+    } catch (e) {
+      setConfigError(String(e));
+    }
+  }
+
+  function chooseImportMode(mode: ImportMode): void {
+    if (pendingImport === null) return;
+    setPendingImport({ ...pendingImport, mode });
+    if (mode === "replace") replaceImpact.mutate();
+  }
+
+  function cancelImport(): void {
+    setPendingImport(null);
+    replaceImpact.reset();
   }
 
   /**
@@ -311,6 +408,130 @@ export default function Settings(): JSX.Element {
           </p>
         </div>
       </div>
+
+      <div className="card">
+        <h2>Konfiguration</h2>
+        <p className="helper">
+          Ordnerliste und Grundeinstellungen als Datei sichern oder auf einem anderen
+          Rechner wieder einspielen. Druckverlauf, Pausenstatus sowie die Pfade zu
+          SumatraPDF und pdfium werden dabei nie mit übertragen.
+        </p>
+        <div className="row" style={{ flexWrap: "wrap" }}>
+          <button type="button" className="btn btn-quiet" onClick={() => void handleExport()}>
+            Konfiguration exportieren
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => void handleImportPick()}
+          >
+            Konfiguration importieren
+          </button>
+        </div>
+        {exportMessage && (
+          <p className="helper" role="status">
+            {exportMessage}
+          </p>
+        )}
+        {configError && (
+          <p className="folder-error" role="alert">
+            {configError}
+          </p>
+        )}
+      </div>
+
+      {importReport && (
+        <div className="card" data-testid="import-report">
+          <h2>Import-Ergebnis</h2>
+          <p>
+            {importReport.total_folders === 1
+              ? "1 Ordner verarbeitet"
+              : `${importReport.total_folders} Ordner verarbeitet`}
+            {" · "}
+            {importReport.created} neu angelegt · {importReport.updated} aktualisiert
+            {" · "}
+            {importReport.settings_applied} Einstellungen übernommen
+          </p>
+          {importReport.disabled > 0 && (
+            <>
+              <p className="folder-error" role="alert">
+                {importReport.disabled === 1
+                  ? "1 Ordner wurde deaktiviert importiert, weil er auf diesem Rechner nicht sofort funktionieren würde:"
+                  : `${importReport.disabled} Ordner wurden deaktiviert importiert, weil sie auf diesem Rechner nicht sofort funktionieren würden:`}
+              </p>
+              <ul>
+                {importReport.folders
+                  .filter((f) => f.disabled_reason !== null)
+                  .map((f) => (
+                    <li key={f.path}>
+                      <strong>{f.name}</strong> ({f.path}):{" "}
+                      <span>{disabledReasonText(f.disabled_reason!)}</span>
+                    </li>
+                  ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+
+      {pendingImport && (
+        <div
+          className="dialog-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) cancelImport();
+          }}
+        >
+          <div className="dialog" role="alertdialog" aria-modal="true" aria-label="Konfiguration importieren">
+            <h2>Konfiguration importieren</h2>
+            <p>
+              Datei: <span className="mono">{pendingImport.path}</span>
+            </p>
+            <div className="modes" role="radiogroup" aria-label="Import-Modus" style={{ marginTop: "0.75rem" }}>
+              <button
+                type="button"
+                className={`mode${pendingImport.mode === "merge" ? " on" : ""}`}
+                aria-pressed={pendingImport.mode === "merge"}
+                onClick={() => chooseImportMode("merge")}
+              >
+                Hinzufügen und aktualisieren
+              </button>
+              <button
+                type="button"
+                className={`mode${pendingImport.mode === "replace" ? " on" : ""}`}
+                aria-pressed={pendingImport.mode === "replace"}
+                onClick={() => chooseImportMode("replace")}
+              >
+                Alles ersetzen
+              </button>
+            </div>
+            <p style={{ marginTop: "0.75rem" }}>
+              {pendingImport.mode === "merge"
+                ? "Ordner aus der Datei werden anhand ihres Pfads mit bestehenden Ordnern abgeglichen: Übereinstimmende Ordner werden aktualisiert, neue werden angelegt. Andere bestehende Ordner bleiben unverändert."
+                : replaceImpact.data
+                  ? replaceAllWarning(replaceImpact.data)
+                  : "Ermittle betroffene Ordner …"}
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="link-btn" onClick={cancelImport}>
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                className={`btn${pendingImport.mode === "replace" ? " btn-danger" : ""}`}
+                disabled={
+                  importConfig.isPending ||
+                  (pendingImport.mode === "replace" && replaceImpact.isPending)
+                }
+                onClick={() => importConfig.mutate(pendingImport)}
+              >
+                {pendingImport.mode === "replace"
+                  ? "Endgültig ersetzen und importieren"
+                  : "Importieren"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
