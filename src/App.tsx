@@ -1,9 +1,11 @@
 import type { JSX, ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import Folders from "./routes/Folders";
 import FolderForm from "./routes/FolderForm";
 import Settings from "./routes/Settings";
 import Logo from "./components/Logo";
+import { api } from "./lib/api";
 import { useJobNotifications } from "./lib/useJobNotifications";
 import "./App.css";
 
@@ -24,6 +26,11 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 function Sidebar(): JSX.Element {
+  // Read from the running binary via a command rather than duplicated in the
+  // frontend, so it can never drift from what the release workflow stamps
+  // into Cargo.toml.
+  const version = useQuery({ queryKey: ["appVersion"], queryFn: api.getAppVersion });
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -39,7 +46,10 @@ function Sidebar(): JSX.Element {
           </NavLink>
         ))}
       </nav>
-      <div className="sidebar-foot">Ordner rein, Papier raus.</div>
+      <div className="sidebar-foot">
+        <span>Ordner rein, Papier raus.</span>
+        {version.data !== undefined && <span className="sidebar-version">v{version.data}</span>}
+      </div>
     </aside>
   );
 }

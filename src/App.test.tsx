@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom";
+import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
+import pkg from "../package.json";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
@@ -20,6 +22,8 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: vi.fn(async () => "granted"),
   sendNotification: vi.fn(),
 }));
+
+const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 function renderApp() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -60,5 +64,16 @@ describe("App shell", () => {
   it("renders the Ordner screen as the index route", () => {
     renderApp();
     expect(screen.getByRole("heading", { level: 1, name: "Ordner" })).toBeInTheDocument();
+  });
+
+  // Asserted against the real package.json version, not a literal, so a
+  // release bump can never leave this test silently passing while the UI
+  // shows a stale number.
+  it("shows the running app version in the sidebar footer, prefixed with v", async () => {
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "get_app_version_cmd" ? pkg.version : [],
+    );
+    renderApp();
+    expect(await screen.findByText(`v${pkg.version}`)).toBeInTheDocument();
   });
 });

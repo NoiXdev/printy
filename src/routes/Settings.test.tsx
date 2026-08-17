@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom";
 import { invoke } from "@tauri-apps/api/core";
 import Settings from "./Settings";
+import pkg from "../../package.json";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/path", () => ({
@@ -74,6 +75,7 @@ describe("Settings", () => {
       }
       if (cmd === "get_autostart_cmd") return false;
       if (cmd === "list_folders_cmd") return [];
+      if (cmd === "get_app_version_cmd") return pkg.version;
       return undefined;
     });
   });
@@ -236,6 +238,14 @@ describe("Settings", () => {
     await waitFor(() =>
       expect(screen.getByTestId("db-path")).toHaveTextContent("printy.sqlite"),
     );
+  });
+
+  // Asserted against the real package.json version, not a literal, so a
+  // release bump can never leave this test silently passing while the UI
+  // shows a stale number.
+  it("shows the running app version as a plain read-only line", async () => {
+    renderScreen();
+    expect(await screen.findByText(`v${pkg.version}`)).toBeInTheDocument();
   });
 
   describe("configuration export", () => {

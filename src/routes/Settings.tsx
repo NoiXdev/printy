@@ -53,6 +53,9 @@ export default function Settings(): JSX.Element {
   // Only needed to size the "Alles ersetzen" warning -- the same folder list
   // every other screen already caches under this query key.
   const folders = useQuery({ queryKey: ["folders"], queryFn: api.listFolders });
+  // Same query key App.tsx's sidebar uses, so the two never disagree and the
+  // command only actually runs once.
+  const version = useQuery({ queryKey: ["appVersion"], queryFn: api.getAppVersion });
 
   // Guards against the settings fetch resolving after the user has already
   // started typing: once the field is touched, a late arrival (or a refetch
@@ -344,6 +347,12 @@ export default function Settings(): JSX.Element {
 
       <div className="card">
         <h2>Erweitert</h2>
+        <div className="field">
+          <label>Version</label>
+          <span className="mono muted">
+            {version.data !== undefined ? `v${version.data}` : "…"}
+          </span>
+        </div>
         <div className="field">
           <label htmlFor="set-sumatra">SumatraPDF (optional)</label>
           <input

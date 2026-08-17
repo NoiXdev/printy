@@ -131,5 +131,8 @@ describe("api", () => {
     expect(invokeMock).toHaveBeenCalledWith("read_text_file_cmd", {
       path: "/tmp/printy-konfiguration.json",
     });
+
+    await api.getAppVersion();
+    expect(invokeMock).toHaveBeenCalledWith("get_app_version_cmd");
   });
 });

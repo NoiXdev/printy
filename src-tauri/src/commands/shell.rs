@@ -72,6 +72,14 @@ pub async fn read_text_file_cmd(path: String) -> AppResult<String> {
     Ok(content)
 }
 
+/// The version of the binary actually running -- read from the crate at
+/// compile time rather than duplicated in the frontend, so it can never
+/// drift from what the release workflow stamped into `Cargo.toml`.
+#[tauri::command]
+pub fn get_app_version_cmd() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +134,13 @@ mod tests {
         let missing = std::env::temp_dir().join("printy-does-not-exist-9999");
         let types = vec!["pdf".to_string()];
         assert_eq!(count_existing(missing.to_str().unwrap(), &types).unwrap(), 0);
+    }
+
+    /// Guards the whole point of reading it via `env!`: this must be the
+    /// version of the binary actually running, not a copy that can drift.
+    #[test]
+    fn get_app_version_cmd_reports_the_crate_version_at_compile_time() {
+        assert_eq!(get_app_version_cmd(), env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]

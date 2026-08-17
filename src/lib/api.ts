@@ -58,4 +58,7 @@ export const api = {
   writeTextFile: (path: string, contents: string) =>
     invoke<void>("write_text_file_cmd", { path, contents }),
   readTextFile: (path: string) => invoke<string>("read_text_file_cmd", { path }),
+
+  /** Bare semver of the running binary, e.g. `"0.1.0"` -- the caller adds the `v` prefix. */
+  getAppVersion: () => invoke<string>("get_app_version_cmd"),
 };
