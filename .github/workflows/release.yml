@@ -7,6 +7,10 @@ name: Release
 # Windows build, and a build without it produces an app that starts normally and
 # then fails on the very first PDF. Folding that step into the shared workflow is
 # a separate piece of work.
+#
+# The macOS half mirrors that shared workflow's build-macos job step for step,
+# so the two stay comparable. It needs no pdfium: macOS renders through the
+# system print service rather than rasterising itself.
 
 on:
   workflow_dispatch:
@@ -42,6 +46,8 @@ jobs:
       next: ${{ steps.ver.outputs.next }}
       tag: ${{ steps.ver.outputs.tag }}
       release_id: ${{ steps.release.outputs.id }}
+      release_url: ${{ steps.release.outputs.url }}
+      notes: ${{ steps.changelog.outputs.clean_changelog }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -224,3 +230,152 @@ jobs:
           gh release upload "${{ needs.prepare.outputs.tag }}" \
             "Printy_${{ needs.prepare.outputs.next }}_x64-portable.zip" \
             --clobber --repo "${{ github.repository }}"
+
+  build-macos:
+    name: Build macOS (Universal)
+    needs: prepare
+    runs-on: macos-latest
+    outputs:
+      sha256: ${{ steps.dmg.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      # dtolnay/rust-toolchain adds targets to the toolchain it fetches. Should
+      # this repository ever pin one in rust-toolchain.toml, cargo would build
+      # with that instead — carrying only the host target, and failing the
+      # universal build after compiling everything. `rustup target add` applies
+      # to whichever toolchain is actually active.
+      - name: Add both macOS targets to the toolchain cargo will use
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Set version to release version
+        uses: NoiXdev/github-workflows/actions/set-tauri-version@main
+        with:
+          version: ${{ needs.prepare.outputs.next }}
+          tauri-dir: src-tauri
+
+      # Import the Developer ID cert into a dedicated keychain, derive the
+      # signing identity, and stage the notarization key. Skipped when the
+      # signing secrets are absent; the build is then produced unsigned, and
+      # macOS greets the first launch with a Gatekeeper warning.
+      - name: Set up code signing
+        if: ${{ env.MACOS_CERTIFICATE != '' }}
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PWD="$(openssl rand -base64 24)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/{print $2; exit}')
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          KEY_PATH="$RUNNER_TEMP/apple_api_key.p8"
+          echo "$APPLE_API_KEY_B64" | base64 --decode > "$KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          rm -f "$CERT_PATH"
+
+      - name: Build & upload installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+        with:
+          # An empty releaseId on a dry run means tauri-action builds but
+          # uploads nothing.
+          releaseId: ${{ inputs.dry_run == false && needs.prepare.outputs.release_id || '' }}
+          args: --target universal-apple-darwin
+
+      # The Homebrew cask pins the checksum of the exact file it points at, so
+      # this has to be the same DMG that was just uploaded — hence reading it
+      # off disk rather than downloading the asset back.
+      - name: Checksum the DMG
+        id: dmg
+        run: |
+          set -euo pipefail
+          dmg=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg \
+            -maxdepth 1 -name '*.dmg' | head -n1)
+          if [ -z "$dmg" ]; then
+            echo "::error::No DMG produced by the macOS build"
+            exit 1
+          fi
+          echo "Found $dmg"
+          echo "sha256=$(shasum -a 256 "$dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up notarization key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/apple_api_key.p8"
+
+  tap:
+    name: Bump the Homebrew cask
+    needs: [prepare, build-macos]
+    # Homebrew has no concept of a prerelease: anything that lands in the tap
+    # is what `brew upgrade` hands every user. Pre-releases therefore skip this
+    # and are installed from the releases page instead.
+    if: ${{ inputs.dry_run == false && inputs.prerelease == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the bump
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh workflow run bump.yml --repo NoiXdev/homebrew-tap \
+            -f kind=cask \
+            -f name=printy \
+            -f version="${TAG#v}" \
+            -f sha256="${{ needs.build-macos.outputs.sha256 }}"
+
+  announce:
+    name: Announce the release
+    needs: [prepare, build-windows, build-macos]
+    # `always()` so a failed platform build still announces what did ship, but
+    # only when a release was actually created.
+    if: ${{ always() && inputs.dry_run == false && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        # A notification is the least important thing this workflow does and
+        # must never fail the release.
+        continue-on-error: true
+        uses: NoiXdev/github-workflows/actions/announce-release@main
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+          tag: ${{ needs.prepare.outputs.tag }}
+          body: ${{ needs.prepare.outputs.notes }}
+          url: ${{ needs.prepare.outputs.release_url }}
+          product-name: Printy
