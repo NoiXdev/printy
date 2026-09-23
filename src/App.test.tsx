@@ -34,23 +34,33 @@ function renderApp() {
   );
 }
 
-// Verlauf and Über are cut from this build by explicit deadline decision and
-// must not point at nonexistent components. Einstellungen now has a real
-// screen (Task 9), so the navigation offers exactly Ordner and Einstellungen.
 describe("App shell", () => {
   it("renders the brand lockup in the sidebar", () => {
     renderApp();
     expect(screen.getByText("Printy")).toBeInTheDocument();
   });
 
-  it("offers the Ordner and Einstellungen navigation entries", () => {
+  it("offers every screen in the navigation", () => {
     renderApp();
     const nav = screen.getByRole("navigation", { name: "Hauptnavigation" });
     const links = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
     expect(links).toEqual([
       expect.stringContaining("Ordner"),
+      expect.stringContaining("Verlauf"),
       expect.stringContaining("Einstellungen"),
+      expect.stringContaining("Über"),
     ]);
+  });
+
+  // Every navigation entry must resolve to a route. A link to a path the
+  // router does not know renders an empty <main>, which looks like a crash.
+  it("routes every navigation entry to a screen", () => {
+    renderApp();
+    const nav = screen.getByRole("navigation", { name: "Hauptnavigation" });
+    const paths = Array.from(nav.querySelectorAll("a")).map((a) =>
+      a.getAttribute("href"),
+    );
+    expect(paths).toEqual(["/", "/verlauf", "/einstellungen", "/ueber"]);
   });
 
   it("marks Ordner as the active start route", () => {
