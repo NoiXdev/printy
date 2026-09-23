@@ -1,0 +1,81 @@
+name: CI
+
+# The gate on every change. `build-windows.yml` produces artifacts and only
+# runs on pushes; this runs on pull requests, where a failure still costs
+# nothing to fix.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to the same pull request makes the previous run pointless.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Kept in step with build-windows.yml and release.yml. See the comment there:
+  # "latest" would let an upstream release swap the binary between two builds
+  # of the same commit.
+  PDFIUM_RELEASE: chromium/7999
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # `npm test` does not typecheck -- Vitest transpiles without checking.
+      # A type error would otherwise reach main and only surface in the build.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Tests
+        run: npm test
+
+  engine:
+    name: Engine (Windows)
+    # Windows, not Ubuntu: the GDI printing path and the pdfium rasteriser are
+    # cfg'd out everywhere else, so a run on Linux would compile and test a
+    # different program than the one that ships -- and report success for code
+    # it never looked at.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Same fetch as the build workflows. The tests bind the library, so it
+      # has to be here before cargo runs.
+      - name: Fetch pdfium
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The release tag contains a slash (chromium/7999); it must be
+          # percent-encoded or the download path splits and 404s.
+          tag_enc="${PDFIUM_RELEASE//\//%2F}"
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${tag_enc}/pdfium-win-x64.tgz"
+          curl -fsSL -o pdfium.tgz "$url"
+          tar -xzf pdfium.tgz bin/pdfium.dll
+          mkdir -p src-tauri/resources
+          cp bin/pdfium.dll src-tauri/resources/pdfium.dll
+
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --locked
