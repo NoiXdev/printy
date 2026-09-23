@@ -1,6 +1,6 @@
 [package]
 name = "printy"
-version = "0.1.0"
+version = "1.0.0"
 description = "Watches folders and automatically prints new files that land in them"
 authors = ["noidee <hello@noidee.dev>"]
 edition = "2021"
