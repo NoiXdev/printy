@@ -2,6 +2,8 @@ import type { JSX, ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import Folders from "./routes/Folders";
+import History from "./routes/History";
+import About from "./routes/About";
 import FolderForm from "./routes/FolderForm";
 import Settings from "./routes/Settings";
 import Logo from "./components/Logo";
@@ -16,13 +18,13 @@ interface NavItem {
   end?: boolean;
 }
 
-// Verlauf and Über are cut from this build by explicit deadline decision.
-// Einstellungen now has a real screen (Task 9), so it joins Ordner here — a
-// route pointing at a component that does not exist would still be worse than
-// a short sidebar, which is why Verlauf and Über stay out.
+// Paths are German, like the rest of the UI strings and the existing
+// /ordner/:id routes -- the implementation plan's English ones predate that.
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Ordner", icon: "📁", end: true },
+  { to: "/verlauf", label: "Verlauf", icon: "🧾" },
   { to: "/einstellungen", label: "Einstellungen", icon: "⚙️" },
+  { to: "/ueber", label: "Über", icon: "ℹ️" },
 ];
 
 function Sidebar(): JSX.Element {
@@ -66,7 +68,9 @@ function App(): JSX.Element {
             <Route path="/" element={<Folders />} />
             <Route path="/ordner/neu" element={<FolderForm />} />
             <Route path="/ordner/:id" element={<FolderForm />} />
+            <Route path="/verlauf" element={<History />} />
             <Route path="/einstellungen" element={<Settings />} />
+            <Route path="/ueber" element={<About />} />
           </Routes>
         </main>
       </div>
