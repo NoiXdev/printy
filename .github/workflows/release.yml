@@ -353,12 +353,42 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.build-macos.outputs.sha256 }}
         run: |
-          gh workflow run bump.yml --repo NoiXdev/homebrew-tap \
-            -f kind=cask \
-            -f name=printy \
-            -f version="${TAG#v}" \
-            -f sha256="${{ needs.build-macos.outputs.sha256 }}"
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if gh workflow run bump.yml --repo NoiXdev/homebrew-tap \
+              -f kind=cask \
+              -f name=printy \
+              -f version="${TAG#v}" \
+              -f sha256="$SHA"; then
+              echo "Dispatched on attempt $attempt."
+              exit 0
+            fi
+            echo "Dispatch attempt $attempt failed."
+            sleep 10
+          done
+          exit 1
+
+      # This job runs after the release is already public. A silent failure
+      # here leaves the tap pointing at the previous version while the
+      # README advertises this one, so say exactly what to run by hand.
+      - name: Explain how to finish the bump by hand
+        if: failure()
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.build-macos.outputs.sha256 }}
+        run: |
+          echo "::error::The Homebrew cask was NOT bumped, but ${TAG} is already published."
+          echo "::error::Until this is run, 'brew install --cask printy' installs the previous version."
+          echo "Run it by hand with a token that may dispatch workflows in the tap:"
+          echo ""
+          echo "  gh workflow run bump.yml --repo NoiXdev/homebrew-tap \\"
+          echo "    -f kind=cask -f name=printy \\"
+          echo "    -f version=${TAG#v} -f sha256=${SHA}"
+          echo ""
+          echo "A 403 here means TAP_TOKEN cannot dispatch in NoiXdev/homebrew-tap."
+          echo "See SETUP.md in that repository for what the token needs."
 
   announce:
     name: Announce the release
